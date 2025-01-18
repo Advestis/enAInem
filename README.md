@@ -31,7 +31,7 @@ these configurations have not been tested.
 # Usage
 The API strictly follows `scikit-learn` standards:
 1. Create an instance of `EnAInem` class.
-2. **EnAInem**'s `fit_transform` public method returns the decomposition in the form of a dictionary. The input type (multiway array or list of views) automatically routes `fit_transform` to either algorithm, NMF or ISM. See docstrings of the class and method for more details.
+2. **EnAInem**'s `fit_transform` public method returns the decomposition in the form of a dictionary. The input type (multiway array or list of views) automatically routes `fit_transform` to either algorithm, NTF or ISM. See docstrings of the class and method for more details.
   ```python
   from enainem import EnAInem
   enainem = EnAInem(n_components=n_components)
