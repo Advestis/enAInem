@@ -1,9 +1,10 @@
 """
 Created on Fri Jan 17 10:10:00 2025
+Version: 1.0.0
 
 @authors: Paul Fogel & George Luta
 @E-mail: paul.fogel@forvismazars.com
-@Github: xxxx
+@Github: https://github.com/Advestis/enAInem/tree/main
 
 The class EnAInem is an extension of the class NMF from scikit-learn:
   - Tensors of any order (Fast HALS)

@@ -1,1 +1,9 @@
+# Compiled Python files
+*.pyc
 __pycache__/
+
+# Virtual environment directories
+.venv/
+
+# IDE directories
+.vscode/
