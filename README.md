@@ -6,7 +6,7 @@ for decomposing nonnegative multiway array and multi-view data into rank-1 nonne
 In machine learning, multi-view data refers to datasets comprising multiple distinct attribute sets 
 ("views") for the same set of observations. When these views share the same attributes but are observed 
 in different contexts, the data can be represented as a tensor. **EnAInem** enables tensor decomposition 
-using Non-Negative Tensor Factorization (NTF) and facilitates the integration of heterogeneous 
+using Non-Negative Tensor Factorization (NTF) and allows the integration of heterogeneous 
 multi-view data into a shared latent space through the *Integrated Sources Model* (ISM).
 
 # Installation
