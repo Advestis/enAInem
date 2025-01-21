@@ -76,7 +76,7 @@ def simple_ntf(
     res = enainem.fit_transform(X)
     B = res["B"]
     relative_error = round(res["relative_error"], 4)
-    print(f"relative_error (versus tensor with missing values) = {relative_error}")
+    print(f"relative_error = {relative_error}")
 
     if create_subplots:
         # Create subplots
