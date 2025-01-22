@@ -1,10 +1,10 @@
 """
 Created on Fri Jan 17 10:10:00 2025
-Version: 1.0.0
+Version: 1.0.1
 
 @authors: Paul Fogel & George Luta
 @E-mail: paul.fogel@forvismazars.com
-@Github: https://github.com/Advestis/enAInem/tree/main
+@Github: https://github.com/Advestis/enAInem_dev/tree/main
 
 The class EnAInem is an extension of the class NMF from scikit-learn:
   - Tensors of any order (Fast HALS)
@@ -19,10 +19,10 @@ License: MIT
 import warnings
 from numbers import Integral, Real
 import os
-from typing import Tuple, Union
+from typing import Tuple, Union, Dict, List
 import concurrent.futures
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from numpy.typing import NDArray
@@ -169,44 +169,6 @@ def _nndsvd(
 
     B[len(Z_shape) - 1] = np.ascontiguousarray(np.maximum(V, 0))
     return [B[dim] for dim in dim_restore]
-
-def _norm_columns(
-        X: NDArray,
-        norm_columns: int,
-        copy: bool=True,
-    ):
-    """Normalize along the first dimension of the tensor.
-
-    Parameters
-    ----------
-        X: NDArray-like of shape
-            Constant matrix.
-        norm_columns: int
-            =0: do nothing
-            =1: scale by the maximum value of each column
-            =2: subtract minimum value and scale
-        copy: boolean, return a copy of X if true.
-    
-    Returns
-    -------
-        Normalized array (copy or inplace depending on boolean 'copy').
-    """
-    if norm_columns == 0:
-        # Do nothing
-        return X
-    else:
-        if copy:
-            # Create a copy of X not to change argument
-            X = X.copy() 
-        if norm_columns == 2:
-            # Remove min of each column
-            min_values = np.nanmin(X, axis=0)
-            X -= min_values
-        # Scale each column
-        max_values = np.nanmax(X, axis=0)
-        # Replace maximum values equal to 0 with 1
-        X = np.divide(X, np.where(max_values == 0, 1, max_values))
-        return X
 
 def _initialize_ntf(
     X: NDArray,
@@ -355,6 +317,10 @@ def _my_update_coordinate_descent(X, W, XHt, HHt, l1_reg, l2_reg, shuffle, rando
     permutation = np.asarray(permutation, dtype=np.intp)
     return _update_cdnmf_fast(W, HHt, XHt, permutation)
 
+def _logistic_step_iter(relative_change, max_step=100, mid=0.01, k=10):
+    step_iter = int(1 + (max_step / (1 + np.exp(-k * (mid - relative_change)))))
+    return step_iter
+
 def _ensure_minimum(matrix, epsilon):
     matrix[matrix < epsilon] = epsilon
     return matrix
@@ -365,11 +331,12 @@ def _fit_coordinate_descent(
     update: list[bool],
     l1_reg: NDArray,
     l2_reg: NDArray,
-    verbose: int,
-    n_components: int,
     tol: float,
     max_iter: int,
     random_state: Union[int, None],
+    verbose: int,
+    use_moving_target: bool,
+    n_iter_weighted_mult: int,
 ) -> Tuple[list[NDArray], int, float]:
     """Compute Non-negative Matrix Factorization (NMF) with Coordinate Descent.
 
@@ -394,6 +361,31 @@ def _fit_coordinate_descent(
 
     l2_reg : NDArray, default= NDArray of 0's.
         L2 regularization parameters for B.
+    
+        tol: float, default=1.e-4
+        Tolerance of the stopping condition.
+
+    tol: float, default=1.e-4
+        Tolerance of the stopping condition.
+    
+    max_iter: int, default=200
+        Maximum number of iterations before timing out.
+
+    random_state: , RandomState instance or None, default=0
+        Used when ``init`` ==  'random' and random completions. Pass an int 
+        for reproducible results across multiple function calls.
+   
+    verbose: int,  default=0
+        The verbosity level.
+
+    use_moving_target: bool, default=False
+        Adjust target on the fly, pushing towards an average value the entries that appear suspicious.
+
+    n_iter_weighted_mult: int, default=10
+        Number of iterations of NMF weighted multiplicative updates when
+        restoring original target at the end of the coordinate descent
+        (ignored if use_moving_target is set to False).
+
 
     Returns
     -------
@@ -424,7 +416,7 @@ def _fit_coordinate_descent(
     # Normalize components prior to updating loop only if all components will be updated
     if all(update):
         for dim in range(n_dims - 1):
-            temp = np.linalg.norm(B[dim], axis=0) + EPSILON
+            temp = _ensure_minimum(np.linalg.norm(B[dim], axis=0), EPSILON)
             B[dim] /= temp
             B[-1] *= temp
 
@@ -440,18 +432,29 @@ def _fit_coordinate_descent(
         lambda x, y: _ensure_minimum(x * y, EPSILON),
         [B[dim].T @ B[dim] for dim in range(n_dims)]
     )
+    
+    if use_moving_target:
+        norm_X = norm(X)
+        avg = np.mean(X)
+
+    WX = X
+    # step_iter = 1
+    # max_step = max_iter // 2
+    # n_iter_0 = 0
 
     for n_iter in range(1, max_iter+1):
         violation = 0
+        # if use_moving_target and ((n_iter - n_iter_0) % step_iter == 0):
+        # Future option
 
         for dim in range(n_dims):
             if update[dim]:
                 if n_dims > 2:
                     indices = [dim] + [i for i in range(n_dims) if i != dim]
-                    X_moved = np.moveaxis(X, source=indices, destination=list(range(n_dims)))
+                    X_moved = np.moveaxis(WX, source=indices, destination=list(range(n_dims)))
                     X_dim = np.reshape(X_moved, (X.shape[dim], -1))
                 else:
-                    X_dim = X if dim == 0 else X.T
+                    X_dim = WX if dim == 0 else WX.T
                 indices = [i for i in range(n_dims) if i != dim]
                 XHt = safe_sparse_dot(
                     X_dim,
@@ -499,6 +502,10 @@ def _fit_coordinate_descent(
                 ConvergenceWarning,
             )
     
+    # Complete approximation with a few weighted mult rules to adjust real X
+    # if use_moving_target:
+        # Future option
+
     # Calculate relative norm of residual tensor
     X_hat = _generate_tensor(B)
     E = X - X_hat
@@ -510,7 +517,7 @@ def _is_integrate_views(
     concat: object,
     embed: object,
     B: NDArray,
-    n_features: list,
+    view_ind: list[(int, int)],
     update: bool,
 ) -> Tuple[NDArray]:
     """Core integration function called by _fit_integrate_sources.
@@ -534,8 +541,8 @@ def _is_integrate_views(
         embed.Q: NDArray
             View loadings in embedding space.
 
-    n_features: list[int]
-        List of numbers of features per view.
+    view_ind: list[(int, int)]
+        List of tuplet indexes that delimit views in concatenated format.
 
     update: boolean
         update B
@@ -559,27 +566,26 @@ def _is_integrate_views(
         embed.X: NDArray
             Embedded views.
     """
-    max_iter_mult, use_fast_mult_rules, update_embed, sparsity_coeff = (
-        cls.max_iter_mult,
+    n_iter_mult, use_fast_mult_rules, update_embed, sparsity_coeff = (
+        cls.n_iter_mult,
         cls.use_fast_mult_rules,
         cls.update_embed,
         cls.sparsity_coeff
     )
-    n_views = len(n_features)
+    n_views = len(view_ind)
     if embed.X is None:
         # Initialize embedding tensor
         embed.X = np.zeros((B.shape[0], B.shape[1], n_views))
               
     # Extract view-related items
-    i1 = 0
     for view in range(n_views):
-        i2 = i1 + n_features[view]
+        i1 = view_ind[view][0]
+        i2 = view_ind[view][1]
         X_view_0, X_view_wgt = concat.X_nan_to_0[:, i1:i2], concat.X_weight[:, i1:i2]
         B_view, H_view = B.copy(), concat.H[i1:i2, :] # Make B persistent within loop
-        i1 = i2
 
         # Apply multiplicative updates to preserve concat.H sparsity
-        for _ in range(0, max_iter_mult):
+        for _ in range(0, n_iter_mult):
             # Weighted multiplicative rules handle missing values
             if use_fast_mult_rules:
                 # do not update estimated view after concat.H update
@@ -629,7 +635,7 @@ def _is_integrate_views(
 
     # Update loadings based on concat.H (initialized by multiplicative updates)
     concat.H = concat.H @ embed.H
-    HHIi = _is_make_H_sparse(concat, embed, n_features, sparsity_coeff)
+    HHIi = _is_make_H_sparse(concat, embed, view_ind, sparsity_coeff)
 
     # Dot product does not allow for in-place operation, send back updated H
     return (HHIi, B, embed)
@@ -637,7 +643,7 @@ def _is_integrate_views(
 def _is_make_H_sparse(
         concat: object,
         embed: object, 
-        n_features: list[int], 
+        view_ind: list[(int, int)], 
         sparsity_coeff: float,
     ) -> Tuple[NDArray, NDArray]:
     """Calculate HHIi of each H column and generate sparse loadings.
@@ -651,8 +657,8 @@ def _is_make_H_sparse(
         embed.Q: NDArray
             View loadings in embedding space.
 
-    n_features: list[int]
-        List of numbers of features per view.
+    view_ind: list[(int, int)]
+        List of tuplet indexes that delimit views in concatenated format.
 
     sparsity_coeff: float=0.8
         Enhance embed.H sparsity by a multiplicative factor applied to the inverse HHI.
@@ -666,14 +672,12 @@ def _is_make_H_sparse(
 
     """
     n_embed = concat.H.shape[1]
+    n_views = len(view_ind)
     HHIi = np.ones(n_embed, dtype=np.uint64)
     H_threshold = np.zeros(n_embed)
     if embed.Q is not None:
-        i1 = 0
-        for n_feat, q in zip(n_features, embed.Q):
-            i2 = i1 + n_feat
-            concat.H[i1:i2, :] *= q
-            i1 = i2
+        for view in range(n_views):
+            concat.H[view_ind[view][0]:view_ind[view][1], :] *= embed.Q[view]
 
     for j in range(0, n_embed):
         # calculate inverse hhi
@@ -686,12 +690,22 @@ def _is_make_H_sparse(
         concat.H[concat.H < H_threshold[None, :]] = 0
     return HHIi
 
+def _is_view_indexes(view_widths):
+    indexes = []
+    start_index = 0
+
+    for width in view_widths:
+        end_index = start_index + width
+        indexes.append((start_index, end_index))
+        start_index = end_index
+    
+    return indexes
+
 def _is_setup(
         X: list[NDArray], 
         H_mask: Union[list[NDArray], None],
         n_components: int,
-        norm_columns: int,
-    ) -> Tuple[Union[list[NDArray], int]]:
+    ) -> Tuple[Union[list[NDArray], int, list[(int,int)]]]:
     """Setup of arrays that will be used by _fit_integrate_sources.
 
     Parameters
@@ -701,13 +715,7 @@ def _is_setup(
 
     H_mask: list(NDArray) | None=None
         View-mapping mask (to enforce zero attributes).
-
-    norm_columns: Literal[0, 1, 2]=0
-        Normalize input tensor over the first dimension (e.g. each column if n_dims==2)
-            =0: Do not normalize
-            =1: Scale each column of the concatenated matrix
-            =2: Substract min and scale each column of the concatenated matrix
-    
+  
     Returns
     -------
     concat: object
@@ -730,8 +738,8 @@ def _is_setup(
         Structure containing embedding components H, Q, and embedding tensor X
         (all initialized at None value).
 
-    n_features: list[int]
-        List of numbers of features per view.
+    view_ind: list[(int, int)]
+        List of tuplet indexes that delimit views in concatenated format.
 
     n_views: int
         Number of views.
@@ -743,8 +751,8 @@ def _is_setup(
     for V in X[1:]:
         concat.X = np.ascontiguousarray(np.hstack((concat.X, V)))
 
-    n_features = [X[view].shape[1] for view in range(len(X))]
-    n_views = len(n_features)
+    view_ind = _is_view_indexes([X[view].shape[1] for view in range(len(X))])
+    n_views = len(X)
 
     # Create X_concat_w with ones and zeros if not_missing/missing entry
     concat.X_weight = np.where(np.isnan(concat.X), 0, 1)
@@ -754,22 +762,13 @@ def _is_setup(
     concat.X_nan_to_0 = concat.X.copy()
     concat.X_nan_to_0[np.isnan(concat.X_nan_to_0)] = 0
     
-    # Normalize
-    concat.X = _norm_columns(concat.X, norm_columns, copy=False)
-    concat.X_nan_to_0 = _norm_columns(concat.X_nan_to_0, norm_columns, copy=False)
-
     if H_mask is not None:
-        concat.H = np.ones((concat.X.shape[1], H_mask.shape[1]))
-        i1 = 0
-        for n_feat, h_mask in zip(n_features, H_mask):
-            i2 = i1 + n_feat
-            concat.H_mask[i1:i2, :] = h_mask
-            i1 = i2
-        concat.H = concat.H_mask
-    else:
-        concat.H = np.ones((concat.X.shape[1], n_components))
+        for view in range(n_views):
+            concat.H_mask[view_ind[view][0]:view_ind[view][1], :] = H_mask[view]
+
+    concat.H = np.ones((concat.X.shape[1], n_components))
   
-    return (concat, embed, n_features, n_views)
+    return (concat, embed, view_ind, n_views)
 
 def _fit_integrate_sources(
     cls,
@@ -831,10 +830,9 @@ def _fit_integrate_sources(
     https://doi.org/10.36922/aih.3427
     """
     
-    verbose, n_components, norm_columns, H_mask, sparsity_coeff, max_iter_int = (
+    verbose, n_components, H_mask, sparsity_coeff, max_iter_int = (
         cls.verbose,
         cls.n_components,
-        cls.norm_columns,
         cls.H_mask,
         cls.sparsity_coeff,
         cls.max_iter_int
@@ -856,7 +854,11 @@ def _fit_integrate_sources(
         B = None
         update = True
     
-    concat, embed, n_features, n_views = _is_setup(X, H_mask, n_components, norm_columns)
+    concat, embed, view_ind, n_views = _is_setup(X, H_mask, n_components)
+
+    # Enforce 'nndsvd' init whan calling fit_transform in the context of ism
+    original_init = cls.init
+    cls.init = 'nndsvd'
     
     if B is None:
 
@@ -884,7 +886,7 @@ def _fit_integrate_sources(
         if concat.H_mask is not None:
             concat.H *= concat.H_mask
         
-        _ = _is_make_H_sparse(concat, embed, n_features, sparsity_coeff)
+        _ = _is_make_H_sparse(concat, embed, view_ind, sparsity_coeff)
         
         # Embed using scores B found in preliminary NMF
         # Initialize components using NMF/NTF
@@ -893,7 +895,7 @@ def _fit_integrate_sources(
             concat,
             embed,
             B,
-            n_features,
+            view_ind,
             update,
         )
         relative_error = norm(concat.X - B @ concat.H.T) / norm(concat.X)
@@ -909,6 +911,7 @@ def _fit_integrate_sources(
     # -------------------------------------------------------------------------
 
     flag = 0
+    n_iter = 0
     if n_embed != n_components:
         # Reset embedding tensor since embedding dimension changes
         embed.X = None
@@ -927,7 +930,7 @@ def _fit_integrate_sources(
                 concat,
                 embed,
                 B,
-                n_features,
+                view_ind,
                 update,
             )
         else:
@@ -936,7 +939,7 @@ def _fit_integrate_sources(
                 concat,
                 embed,
                 B,
-                n_features,
+                view_ind,
                 update,
             )
         if (HHIi == HHIi_update_0).all():
@@ -946,13 +949,13 @@ def _fit_integrate_sources(
         if flag == 3:
             break
 
+    # restore original init parameter
+    cls.init = original_init
+
     # Convert H into mapping list H_map
     H_map = []
-    i1 = 0
     for view in range(n_views):
-        i2 = i1 + n_features[view]
-        H_map.append(concat.H[i1:i2, :])
-        i1 = i2
+        H_map.append(concat.H[view_ind[view][0]:view_ind[view][1], :])
 
     relative_error = norm(np.nan_to_num(concat.X - B @ concat.H.T)) / norm(np.nan_to_num(concat.X))
     if verbose >= 1:
@@ -1010,11 +1013,13 @@ class EnAInem(BaseEstimator):
     dim_order: list, default=None
         The ordering of dimensions to be considered during nndsvd initialization.
 
-    norm_columns: Literal[0, 1, 2], default=0
-        Normalize input tensor over the first dimension (e.g. each column if n_dims==2)
-            =0: Do not normalize
-            =1: Scale each column of the concatenated matrix
-            =2: Substract min and scale each column of the concatenated matrix
+    use_moving_target: bool, default=False
+        Future option.
+
+    n_iter_weighted_mult: int, default=10
+        Number of iterations of NMF weighted multiplicative updates when
+        restoring original target at the end of the coordinate descent
+        (ignored if use_moving_target is set to False).
 
     ### ISM specifics
     n_embed: int or None, default=None
@@ -1023,8 +1028,8 @@ class EnAInem(BaseEstimator):
     max_iter_int: int, default=20
         Max number of iterations during the straightening process.
 
-    max_iter_mult: int, default=200
-        Max number of iterations of NMF multiplicative updates during the embedding.
+    n_iter_mult: int, default=200
+        Number of iterations of NMF multiplicative updates during the embedding.
 
     use_fast_mult_rules: boolean, default=True
         Use common matrix estimate in B and H updates.
@@ -1047,11 +1052,17 @@ class EnAInem(BaseEstimator):
         "random_state": ["random_state"],
         "verbose": ["verbose"],
         "dim_order": [list, None],
-        "norm_columns": [Interval(Integral, 0, 2, closed="both")],
+        "use_moving_target": ["boolean"],
+        "n_iter_weighted_mult": [Interval(Integral, 0, None, closed="left")],
+        # Random completions specifics
+        "n_completions": [Interval(Integral, 2, None, closed="left")],
+        "integrator": [StrOptions({"mean", "nmf", "ism"})],
+        "irc_parallel_fit_1": ["boolean"],
+        "irc_parallel_fit_2": ["boolean"],
         # ISM specifics
         "n_embed": [Interval(Integral, 0, None, closed="left"), None],
         "max_iter_int": [Interval(Integral, 0, None, closed="left")],
-        "max_iter_mult": [Interval(Integral, 20, None, closed="left")],
+        "n_iter_mult": [Interval(Integral, 20, None, closed="left")],
         "use_fast_mult_rules": ["boolean"],
         "sparsity_coeff": [Interval(Real, 0, None, closed="left")],
         "update_embed": ["boolean"],
@@ -1068,10 +1079,15 @@ class EnAInem(BaseEstimator):
         random_state=0,
         verbose=0,
         dim_order=None,
-        norm_columns=0,
+        use_moving_target=False,
+        n_iter_weighted_mult=10,
+        n_completions=5,
+        integrator="ism",
+        irc_parallel_fit_1=True,
+        irc_parallel_fit_2=False,
         n_embed=None,
         max_iter_int=20,
-        max_iter_mult=200,
+        n_iter_mult=200,
         use_fast_mult_rules=True,
         sparsity_coeff=0.8,
         update_embed=True,
@@ -1084,10 +1100,15 @@ class EnAInem(BaseEstimator):
         self.random_state = random_state
         self.verbose = verbose
         self.dim_order = dim_order
-        self.norm_columns = norm_columns
+        self.use_moving_target = use_moving_target
+        self.n_iter_weighted_mult = n_iter_weighted_mult
+        self.n_completions = n_completions
+        self.integrator = integrator
+        self.irc_parallel_fit_1 = irc_parallel_fit_1
+        self.irc_parallel_fit_2 = irc_parallel_fit_2
         self.n_embed = n_embed
         self.max_iter_int = max_iter_int
-        self.max_iter_mult = max_iter_mult
+        self.n_iter_mult = n_iter_mult
         self.use_fast_mult_rules = use_fast_mult_rules
         self.sparsity_coeff = sparsity_coeff
         self.update_embed = update_embed
@@ -1095,16 +1116,23 @@ class EnAInem(BaseEstimator):
 
         self._validate_params()
 
+        if _running_in_notebook() and (self.irc_parallel_fit_1 or self.irc_parallel_fit_2):
+            # Disable parallel operations
+            warnings.warn("Running in Jupyter Notebook. Disabling parallel operations.", UserWarning)
+            self.irc_parallel_fit_1 = False
+            self.irc_parallel_fit_2 = False
+    
     def get_param(self, name: str):
-        try:
-            return self.dict()[name] 
-        except KeyError:
+        if hasattr(self, name):
+            return getattr(self, name)
+        else:
             raise ValueError(f"Parameter '{name}' does not exist in the model.")
 
     def set_param(self, name: str, value): 
-        if name not in self.__fields__: 
+        if not hasattr(self, name):
             raise ValueError(f"Parameter '{name}' does not exist in the model.") 
         setattr(self, name, value)
+        self._validate_params()
 
     # @_fit_context(prefer_skip_nested_validation=True)
     # (decorator not needed since class parameters already validated in __init__)
@@ -1187,43 +1215,44 @@ class EnAInem(BaseEstimator):
         if isinstance(X, np.ndarray):
             # Validate X, B and update
             B, update = self._check_params_ntf(X, B, update)
-            if self.norm_columns > 0:
-                # Normalize columns of X if self.norm_columns is True and return a copy
-                X = _norm_columns(X, self.norm_columns, copy=True)
-
             # Fast HALS
-            if verbose >= 1:
-                print("Applying fast hals...")
-            if B is None:
-                B = _initialize_ntf(
-                    X,
-                    self.n_components,
-                    self.dim_order,
-                    self.init,
-                    random_state=self.random_state
+            if not np.isnan(X).any():
+                if verbose >= 1:
+                    print("Applying fast hals...")
+                if B is None:
+                    B = _initialize_ntf(
+                        X,
+                        self.n_components,
+                        self.dim_order,
+                        self.init,
+                        random_state=self.random_state
+                    )
+                l1_reg, l2_reg = self._compute_regularization(X, alpha, l1_ratio)
+                B, n_iter, violation, relative_error = _fit_coordinate_descent(
+                    X, 
+                    B, 
+                    update,
+                    l1_reg, 
+                    l2_reg,
+                    self.tol,
+                    self.max_iter,
+                    self.random_state,
+                    verbose,
+                    self.use_moving_target,
+                    self.n_iter_weighted_mult,
                 )
-            l1_reg, l2_reg = self._compute_regularization(X, alpha, l1_ratio)
-            B, n_iter, violation, relative_error = _fit_coordinate_descent(
-                X, 
-                B, 
-                update,
-                l1_reg, 
-                l2_reg,
-                verbose,
-                self.n_components,
-                self.tol,
-                self.max_iter,
-                self.random_state,
-            )
-            res = {
-                "B": B,
-                "n_iter": n_iter,
-                "violation": violation,
-                "relative_error": relative_error
-            }
-            if verbose >= 1:
-                print("fast-hals applied.")
-            return res
+                res = {
+                    "B": B,
+                    "n_iter": n_iter,
+                    "violation": violation,
+                    "relative_error": relative_error
+                }
+                if verbose >= 1:
+                    print("fast-hals applied.")
+                return res
+            else:
+                # Future option
+                return None         
         elif isinstance(X, list):
             # Validate X, B and update
             B, update = self._check_params_ism(X, B, update, self.H_mask)    

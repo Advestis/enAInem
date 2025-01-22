@@ -59,7 +59,6 @@ def simple_ntf(
         max_iter=200,
         tol=1e-6,
         verbose=0,
-        norm_columns=0,
         random_state=0,
     )
     # enainem._validate_params()
@@ -72,7 +71,6 @@ def simple_ntf(
     X_gen.shape
 
     X = X_gen
-
     res = enainem.fit_transform(X)
     B = res["B"]
     relative_error = round(res["relative_error"], 4)
