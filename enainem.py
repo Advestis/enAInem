@@ -1,6 +1,6 @@
 """
 Created on Fri Jan 17 10:10:00 2025
-Version: 1.1.0
+Version: 1.2.1
 
 @authors: Paul Fogel & George Luta
 @E-mail: paul.fogel@forvismazars.com
@@ -1271,6 +1271,11 @@ class EnAInem(BaseEstimator):
             if verbose >= 1:
                 print("ism applied.")
             return res
+        else:
+            raise ValueError(
+                "Numpy ndarray or list of ndarrays must be passed to fit_transform. "
+                f"An object of type {type(X)} was passed."
+                )
 
     def _check_params_ntf(
         self,
