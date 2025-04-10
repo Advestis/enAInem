@@ -1,6 +1,6 @@
 """
 Created on Fri Jan 17 10:10:00 2025
-Version: 1.2.1
+Version: 1.0.0
 
 @authors: Paul Fogel & George Luta
 @E-mail: paul.fogel@forvismazars.com
@@ -9,6 +9,7 @@ Version: 1.2.1
 The class EnAInem is an extension of the class NMF from scikit-learn:
   - Tensors of any order (Fast HALS)
   - Heterogeneous views (using the Integrated Sources Model)
+  - Random Completions (using the Integrated Sources Model)
 Note: The loss criterion is restricted to Frobenius
 Acknowledgment: With Advestis part of Mazars support
 License: MIT
@@ -18,17 +19,15 @@ License: MIT
 import warnings
 from numbers import Integral, Real
 import os
-from typing import Tuple, Union, Dict, List
+from typing import Tuple, Union
 import concurrent.futures
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import khatri_rao
 from scipy.sparse.linalg import svds
-from scipy.stats import skew
-from scipy.stats import halfnorm
 from functools import reduce
 
 from sklearn.base import BaseEstimator
@@ -54,9 +53,6 @@ EPSILON = np.finfo(np.float32).eps
 class ConvergenceWarning(UserWarning):
     """Custom warning to capture convergence problems"""
 
-class OptimizationWarning(UserWarning):
-    """Custom warning to capture optimization problems"""
-
 # Define a custom showwarning function
 def custom_showwarning(message, category, filename, lineno, file=None, line=None):
     print(f"{category.__name__}: {message}")
@@ -67,7 +63,6 @@ warnings.showwarning = custom_showwarning
 def _svd(
     X: NDArray,
     k: int,
-    use_randomized_svd: bool,
     random_state: Union[int, None],
 ) -> Tuple[NDArray, NDArray, NDArray, NDArray]:
     """Apply full or truncated SVD.
@@ -83,16 +78,9 @@ def _svd(
                 scipy.sparse.linalg.svds for details).
     """
     if k < min(X.shape):
-        if use_randomized_svd:
-            U, s, Vt = randomized_svd(X, k, random_state=random_state)  # type: ignore
-        else:
-            U, s, Vt = svds(X, k, random_state=random_state)  # type: ignore
-
+        U, s, Vt = svds(X, k, random_state=random_state)  # type: ignore
     else:
         U, s, Vt = np.linalg.svd(X, full_matrices=False)
-        U = U[:, :k]
-        s = s[:k]
-        Vt = Vt[:k, :]
 
     # Ensure a majority of positive elements in Vt
     if np.median(Vt) < 0:
@@ -106,16 +94,20 @@ def _svd(
 def _nndsvd(
     X: NDArray,
     n_components: int,
-    use_randomized_svd: bool,
     dim_order: list[int],
     random_state: Union[int, None],
     eps=1e-6,
 ) -> list[NDArray]:
     """Generalize NNDSVD for NTF initialization.
 
-    Returns
+    Parameters
     ----------
         arrays (list[NDArray]): Basis vectors in each dimension of the tensor.
+
+    Returns
+    -------
+        NDArray: The result of the sum(outer_product by component).
+                Same dimension as X.
 
     Approach
     --------
@@ -134,10 +126,10 @@ def _nndsvd(
     Z = X.copy()
     Z = np.transpose(Z, axes=dim_order)
     B = [np.zeros((Z_shape[dim], n_components)) for dim in range(len(Z_shape))]
- 
+
     # Step 1
     # Truncated SVD of Z
-    U, S, V = _svd(Z.reshape(Z_shape[0], -1), n_components, use_randomized_svd, random_state)
+    U, S, V = _svd(Z.reshape(Z_shape[0], -1), n_components, random_state)
     if n_components == 1:
         U = U[:, np.newaxis]
         V = V[:, np.newaxis]
@@ -165,7 +157,7 @@ def _nndsvd(
     # Step 2 on V
     for dim in range(1, len(Z_shape) - 1):
         shape_product = np.prod(Z_shape[dim + 1:])
-        svd_results = [_svd(V[:, j].reshape(Z_shape[dim], shape_product), 1, use_randomized_svd, random_state) 
+        svd_results = [_svd(V[:, j].reshape(Z_shape[dim], shape_product), 1, random_state) 
                        for j in range(n_components)]
         B_slices, S_values, V_slices = zip(*svd_results)
         Sigma = np.sqrt(np.column_stack(S_values))
@@ -178,12 +170,49 @@ def _nndsvd(
     B[len(Z_shape) - 1] = np.ascontiguousarray(np.maximum(V, 0))
     return [B[dim] for dim in dim_restore]
 
+def _norm_columns(
+        X: NDArray,
+        norm_columns: int,
+        copy: bool=True,
+    ):
+    """Normalize along the first dimension of the tensor.
+
+    Parameters
+    ----------
+        X: NDArray-like of shape
+            Constant matrix.
+        norm_columns: int
+            =0: do nothing
+            =1: scale by the maximum value of each column
+            =2: subtract minimum value and scale
+        copy: boolean, return a copy of X if true.
+    
+    Returns
+    -------
+        Normalized array (copy or inplace depending on boolean 'copy').
+    """
+    if norm_columns == 0:
+        # Do nothing
+        return X
+    else:
+        if copy:
+            # Create a copy of X not to change argument
+            X = X.copy() 
+        if norm_columns == 2:
+            # Remove min of each column
+            min_values = np.nanmin(X, axis=0)
+            X -= min_values
+        # Scale each column
+        max_values = np.nanmax(X, axis=0)
+        # Replace maximum values equal to 0 with 1
+        X = np.divide(X, np.where(max_values == 0, 1, max_values))
+        return X
+
 def _initialize_ntf(
     X: NDArray,
     n_components: int,
-    dim_order: Union[list[int], None],
+    dim_order: list[int],
     init: str,
-    use_randomized_svd: bool,
     random_state: Union[int, None]=None,
 ) -> list[NDArray]:
     """Algorithms for NMF initialization.
@@ -266,22 +295,18 @@ def _initialize_ntf(
             init = "random"
 
     if init == "random":
+        avg = (2 * X.mean() / n_components) ** (1 / X.ndim)
         rng = check_random_state(random_state)
-        avg = (X.mean() / n_components) ** (1 / X.ndim)
-        B = []
-        for dim in range(n_dims):
-            B.append(
-            avg * rng.standard_normal(size=(X.shape[dim], n_components)).astype(
-                X.dtype, copy=False
-            )) 
-        return [np.abs(B[dim], out=B[dim]) for dim in range(X.ndim)]
+        return [
+            avg * rng.random(size=(X.shape[dim], n_components)) for dim in range(X.ndim)
+        ]
     else:
         if init == "custom":
             raise ValueError(
                 "When init=='custom', B list must be provided. Set "
                 "init='nndsvd' or 'random' to initialize B."
             )
-        return _nndsvd(X, n_components, use_randomized_svd, dim_order, random_state)
+        return _nndsvd(X, n_components, dim_order, random_state)
 
 def _generate_tensor(
         B: list[NDArray]
@@ -340,12 +365,11 @@ def _fit_coordinate_descent(
     update: list[bool],
     l1_reg: NDArray,
     l2_reg: NDArray,
-    init: bool,
-    use_randomized_svd: bool,
+    verbose: int,
+    n_components: int,
     tol: float,
     max_iter: int,
     random_state: Union[int, None],
-    verbose: int,
 ) -> Tuple[list[NDArray], int, float]:
     """Compute Non-negative Matrix Factorization (NMF) with Coordinate Descent.
 
@@ -370,25 +394,6 @@ def _fit_coordinate_descent(
 
     l2_reg : NDArray, default= NDArray of 0's.
         L2 regularization parameters for B.
-
-    init: Literal['random', 'nndsvd', 'custom'], default='nndsvd'
-        The method used for the initialization of the NTF decomposition.
-    
-    use_randomized_svd: bool, default=True
-        use scikit-learn randomized svd. If False, numpy.linalg.svds is used.
-    
-    tol: float, default=1.e-4
-        Tolerance of the stopping condition.
-    
-    max_iter: int, default=200
-        Maximum number of iterations before timing out.
-
-    random_state: , RandomState instance or None, default=0
-        Used when ``init`` ==  'random'. Pass an int 
-        for reproducible results across multiple function calls.
-   
-    verbose: int,  default=0
-        The verbosity level.
 
     Returns
     -------
@@ -415,24 +420,13 @@ def _fit_coordinate_descent(
     
     #  so b arrays are in C order in memory
     B = [check_array(b, order="C") for b in B]
-    
-    # # Scale components prior to updating loop using max of halfnorm distribution
-    # n_components = B[0].shape[1]
-    # rng = check_random_state(random_state)
-    # avg = (X.mean() / n_components) ** (1 / X.ndim)
-    # for dim in range(n_dims):
-    #     # Generate the same number of values from the standard half normal distribution
-    #     half_normal_values = halfnorm.rvs(size=B[dim].shape[0], random_state=rng)
-    #     # Scale
-    #     B_dim_max = np.max(B[dim], axis=0)
-    #     B[dim] *= (avg * half_normal_values.max() / np.where(B_dim_max==0, 1, B_dim_max))
 
-    # Normalize components prior to updating loop
-    for dim in range(n_dims - 1):
-        temp = _ensure_minimum(np.linalg.norm(B[dim], ord=1, axis=0), EPSILON)
-        B[dim] /= temp
-        B[-1] *= temp
-    B[-1] *= np.mean(X) / max(np.mean(_generate_tensor(B)), EPSILON)
+    # Normalize components prior to updating loop only if all components will be updated
+    if all(update):
+        for dim in range(n_dims - 1):
+            temp = np.linalg.norm(B[dim], axis=0) + EPSILON
+            B[dim] /= temp
+            B[-1] *= temp
 
     # Parameters required by sklearn update_coordinate_descent (but not used for now)
     rng = check_random_state(random_state)
@@ -446,8 +440,6 @@ def _fit_coordinate_descent(
         lambda x, y: _ensure_minimum(x * y, EPSILON),
         [B[dim].T @ B[dim] for dim in range(n_dims)]
     )
-    
-    DX = X
 
     for n_iter in range(1, max_iter+1):
         violation = 0
@@ -456,10 +448,10 @@ def _fit_coordinate_descent(
             if update[dim]:
                 if n_dims > 2:
                     indices = [dim] + [i for i in range(n_dims) if i != dim]
-                    X_moved = np.moveaxis(DX, source=indices, destination=list(range(n_dims)))
+                    X_moved = np.moveaxis(X, source=indices, destination=list(range(n_dims)))
                     X_dim = np.reshape(X_moved, (X.shape[dim], -1))
                 else:
-                    X_dim = DX if dim == 0 else DX.T
+                    X_dim = X if dim == 0 else X.T
                 indices = [i for i in range(n_dims) if i != dim]
                 XHt = safe_sparse_dot(
                     X_dim,
@@ -471,6 +463,8 @@ def _fit_coordinate_descent(
                 violation += _my_update_coordinate_descent(
                     X_dim, B[dim], XHt, HHt_copy, l1_reg[dim], l2_reg[dim], shuffle, rng
                 )
+
+                # See note above concerning the addition of EPSILON
                 np.copyto(HHt_buffer, HHt * _ensure_minimum(B[dim].T @ B[dim], EPSILON))
 
                 # Alternative update using unmodified sklearn update is sub-optimal
@@ -504,20 +498,19 @@ def _fit_coordinate_descent(
                 ),
                 ConvergenceWarning,
             )
-
+    
     # Calculate relative norm of residual tensor
     X_hat = _generate_tensor(B)
     E = X - X_hat
-    relative_error = norm(E) / max(norm(X), EPSILON)
+    relative_error = norm(E) / norm(X)
     return (B, n_iter, scaled_violation, relative_error)
-
 
 def _is_integrate_views(
     cls,
     concat: object,
     embed: object,
     B: NDArray,
-    view_ind: list[(int, int)],
+    n_features: list,
     update: bool,
 ) -> Tuple[NDArray]:
     """Core integration function called by _fit_integrate_sources.
@@ -541,8 +534,8 @@ def _is_integrate_views(
         embed.Q: NDArray
             View loadings in embedding space.
 
-    view_ind: list[(int, int)]
-        List of tuplet indexes that delimit views in concatenated format.
+    n_features: list[int]
+        List of numbers of features per view.
 
     update: boolean
         update B
@@ -566,26 +559,27 @@ def _is_integrate_views(
         embed.X: NDArray
             Embedded views.
     """
-    n_iter_mult, use_fast_mult_rules, update_embed, sparsity_coeff = (
-        cls.n_iter_mult,
+    max_iter_mult, use_fast_mult_rules, update_embed, sparsity_coeff = (
+        cls.max_iter_mult,
         cls.use_fast_mult_rules,
         cls.update_embed,
         cls.sparsity_coeff
     )
-    n_views = len(view_ind)
+    n_views = len(n_features)
     if embed.X is None:
         # Initialize embedding tensor
         embed.X = np.zeros((B.shape[0], B.shape[1], n_views))
               
     # Extract view-related items
+    i1 = 0
     for view in range(n_views):
-        i1 = view_ind[view][0]
-        i2 = view_ind[view][1]
+        i2 = i1 + n_features[view]
         X_view_0, X_view_wgt = concat.X_nan_to_0[:, i1:i2], concat.X_weight[:, i1:i2]
         B_view, H_view = B.copy(), concat.H[i1:i2, :] # Make B persistent within loop
+        i1 = i2
 
         # Apply multiplicative updates to preserve concat.H sparsity
-        for _ in range(0, n_iter_mult):
+        for _ in range(0, max_iter_mult):
             # Weighted multiplicative rules handle missing values
             if use_fast_mult_rules:
                 # do not update estimated view after concat.H update
@@ -605,9 +599,11 @@ def _is_integrate_views(
                 B_view *= numerator / denominator
 
         # Normalize B_view by max column and update H_view
-        temp = _ensure_minimum(np.linalg.norm(B, ord=1, axis=0), EPSILON)
-        B_view /= temp
-        H_view *= temp
+        max_values = np.max(B_view, axis=0)
+        
+        # Replace maximum values by 1 when equal to 0
+        B_view = np.divide(B_view, np.where(max_values == 0, 1, max_values), out=B_view)
+        H_view = np.multiply(H_view, max_values, out=H_view)
 
         # Generate embedding tensor
         embed.X[:, :, view] = B_view
@@ -633,7 +629,7 @@ def _is_integrate_views(
 
     # Update loadings based on concat.H (initialized by multiplicative updates)
     concat.H = concat.H @ embed.H
-    HHIi = _is_make_H_sparse(concat, embed, view_ind, sparsity_coeff)
+    HHIi = _is_make_H_sparse(concat, embed, n_features, sparsity_coeff)
 
     # Dot product does not allow for in-place operation, send back updated H
     return (HHIi, B, embed)
@@ -641,7 +637,7 @@ def _is_integrate_views(
 def _is_make_H_sparse(
         concat: object,
         embed: object, 
-        view_ind: list[(int, int)], 
+        n_features: list[int], 
         sparsity_coeff: float,
     ) -> Tuple[NDArray, NDArray]:
     """Calculate HHIi of each H column and generate sparse loadings.
@@ -655,8 +651,8 @@ def _is_make_H_sparse(
         embed.Q: NDArray
             View loadings in embedding space.
 
-    view_ind: list[(int, int)]
-        List of tuplet indexes that delimit views in concatenated format.
+    n_features: list[int]
+        List of numbers of features per view.
 
     sparsity_coeff: float=0.8
         Enhance embed.H sparsity by a multiplicative factor applied to the inverse HHI.
@@ -670,12 +666,14 @@ def _is_make_H_sparse(
 
     """
     n_embed = concat.H.shape[1]
-    n_views = len(view_ind)
     HHIi = np.ones(n_embed, dtype=np.uint64)
     H_threshold = np.zeros(n_embed)
     if embed.Q is not None:
-        for view in range(n_views):
-            concat.H[view_ind[view][0]:view_ind[view][1], :] *= embed.Q[view]
+        i1 = 0
+        for n_feat, q in zip(n_features, embed.Q):
+            i2 = i1 + n_feat
+            concat.H[i1:i2, :] *= q
+            i1 = i2
 
     for j in range(0, n_embed):
         # calculate inverse hhi
@@ -688,22 +686,12 @@ def _is_make_H_sparse(
         concat.H[concat.H < H_threshold[None, :]] = 0
     return HHIi
 
-def _is_view_indexes(view_widths):
-    indexes = []
-    start_index = 0
-
-    for width in view_widths:
-        end_index = start_index + width
-        indexes.append((start_index, end_index))
-        start_index = end_index
-    
-    return indexes
-
 def _is_setup(
         X: list[NDArray], 
         H_mask: Union[list[NDArray], None],
         n_components: int,
-    ) -> Tuple[Union[list[NDArray], int, list[(int,int)]]]:
+        norm_columns: int,
+    ) -> Tuple[Union[list[NDArray], int]]:
     """Setup of arrays that will be used by _fit_integrate_sources.
 
     Parameters
@@ -713,7 +701,13 @@ def _is_setup(
 
     H_mask: list(NDArray) | None=None
         View-mapping mask (to enforce zero attributes).
-  
+
+    norm_columns: Literal[0, 1, 2]=0
+        Normalize input tensor over the first dimension (e.g. each column if n_dims==2)
+            =0: Do not normalize
+            =1: Scale each column of the concatenated matrix
+            =2: Substract min and scale each column of the concatenated matrix
+    
     Returns
     -------
     concat: object
@@ -736,8 +730,8 @@ def _is_setup(
         Structure containing embedding components H, Q, and embedding tensor X
         (all initialized at None value).
 
-    view_ind: list[(int, int)]
-        List of tuplet indexes that delimit views in concatenated format.
+    n_features: list[int]
+        List of numbers of features per view.
 
     n_views: int
         Number of views.
@@ -749,8 +743,8 @@ def _is_setup(
     for V in X[1:]:
         concat.X = np.ascontiguousarray(np.hstack((concat.X, V)))
 
-    view_ind = _is_view_indexes([X[view].shape[1] for view in range(len(X))])
-    n_views = len(X)
+    n_features = [X[view].shape[1] for view in range(len(X))]
+    n_views = len(n_features)
 
     # Create X_concat_w with ones and zeros if not_missing/missing entry
     concat.X_weight = np.where(np.isnan(concat.X), 0, 1)
@@ -760,13 +754,22 @@ def _is_setup(
     concat.X_nan_to_0 = concat.X.copy()
     concat.X_nan_to_0[np.isnan(concat.X_nan_to_0)] = 0
     
-    if H_mask is not None:
-        for view in range(n_views):
-            concat.H_mask[view_ind[view][0]:view_ind[view][1], :] = H_mask[view]
+    # Normalize
+    concat.X = _norm_columns(concat.X, norm_columns, copy=False)
+    concat.X_nan_to_0 = _norm_columns(concat.X_nan_to_0, norm_columns, copy=False)
 
-    concat.H = np.ones((concat.X.shape[1], n_components))
+    if H_mask is not None:
+        concat.H = np.ones((concat.X.shape[1], H_mask.shape[1]))
+        i1 = 0
+        for n_feat, h_mask in zip(n_features, H_mask):
+            i2 = i1 + n_feat
+            concat.H_mask[i1:i2, :] = h_mask
+            i1 = i2
+        concat.H = concat.H_mask
+    else:
+        concat.H = np.ones((concat.X.shape[1], n_components))
   
-    return (concat, embed, view_ind, n_views)
+    return (concat, embed, n_features, n_views)
 
 def _fit_integrate_sources(
     cls,
@@ -828,9 +831,10 @@ def _fit_integrate_sources(
     https://doi.org/10.36922/aih.3427
     """
     
-    verbose, n_components, H_mask, sparsity_coeff, max_iter_int = (
+    verbose, n_components, norm_columns, H_mask, sparsity_coeff, max_iter_int = (
         cls.verbose,
         cls.n_components,
+        cls.norm_columns,
         cls.H_mask,
         cls.sparsity_coeff,
         cls.max_iter_int
@@ -852,11 +856,7 @@ def _fit_integrate_sources(
         B = None
         update = True
     
-    concat, embed, view_ind, n_views = _is_setup(X, H_mask, n_components)
-
-    # Enforce 'nndsvd' init whan calling fit_transform in the context of ism
-    original_init = cls.init
-    cls.init = 'nndsvd'
+    concat, embed, n_features, n_views = _is_setup(X, H_mask, n_components, norm_columns)
     
     if B is None:
 
@@ -867,24 +867,24 @@ def _fit_integrate_sources(
         original_n_components = cls.n_components
         cls.n_components = n_embed
         res = cls.fit_transform(concat.X)
-        B = res["B"][0]
         cls.n_components = original_n_components
+        B = res["B"][0]
         concat.H = res["B"][1]
-        # temp = 1
-        temp = _ensure_minimum(np.linalg.norm(B, ord=1, axis=0), EPSILON)
-        B /= temp
-        concat.H *= temp
-        if np.isclose(temp, EPSILON).any():
+        max_cols = np.max(B, axis=0)
+        if np.min(np.max(B, axis=0)) == 0:
             warnings.warn(
-                'ISM may produce suboptimal results due to a null component when initialized.',
-                OptimizationWarning
+                'Initial NMF on concatenated views returned a null component. ' 
+                'ISM results may not be optimal.', 
+                UserWarning
             )
+        B = np.divide(B, np.where(max_cols == 0, 1, max_cols))
+        concat.H *= max_cols
 
         # Initialize view-mapping
         if concat.H_mask is not None:
             concat.H *= concat.H_mask
         
-        _ = _is_make_H_sparse(concat, embed, view_ind, sparsity_coeff)
+        _ = _is_make_H_sparse(concat, embed, n_features, sparsity_coeff)
         
         # Embed using scores B found in preliminary NMF
         # Initialize components using NMF/NTF
@@ -893,7 +893,7 @@ def _fit_integrate_sources(
             concat,
             embed,
             B,
-            view_ind,
+            n_features,
             update,
         )
         relative_error = norm(concat.X - B @ concat.H.T) / norm(concat.X)
@@ -909,7 +909,6 @@ def _fit_integrate_sources(
     # -------------------------------------------------------------------------
 
     flag = 0
-    n_iter = 0
     if n_embed != n_components:
         # Reset embedding tensor since embedding dimension changes
         embed.X = None
@@ -928,7 +927,7 @@ def _fit_integrate_sources(
                 concat,
                 embed,
                 B,
-                view_ind,
+                n_features,
                 update,
             )
         else:
@@ -937,7 +936,7 @@ def _fit_integrate_sources(
                 concat,
                 embed,
                 B,
-                view_ind,
+                n_features,
                 update,
             )
         if (HHIi == HHIi_update_0).all():
@@ -947,13 +946,13 @@ def _fit_integrate_sources(
         if flag == 3:
             break
 
-    # restore original init parameter
-    cls.init = original_init
-
     # Convert H into mapping list H_map
     H_map = []
+    i1 = 0
     for view in range(n_views):
-        H_map.append(concat.H[view_ind[view][0]:view_ind[view][1], :])
+        i2 = i1 + n_features[view]
+        H_map.append(concat.H[i1:i2, :])
+        i1 = i2
 
     relative_error = norm(np.nan_to_num(concat.X - B @ concat.H.T)) / norm(np.nan_to_num(concat.X))
     if verbose >= 1:
@@ -995,9 +994,6 @@ class EnAInem(BaseEstimator):
     init: Literal['random', 'nndsvd', 'custom'], default='nndsvd'
         The method used for the initialization of the NTF decomposition.
 
-    use_randomized_svd: bool, default=False
-        use scikit-learn randomized svd. If False, numpy.linalg.svds is used.
-
     tol: float, default=1.e-4
         Tolerance of the stopping condition.
 
@@ -1005,7 +1001,7 @@ class EnAInem(BaseEstimator):
         Maximum number of iterations before timing out.
 
     random_state: , RandomState instance or None, default=0
-        Used when ``init`` ==  'random'. Pass an int 
+        Used when ``init`` ==  'random' and random completions. Pass an int 
         for reproducible results across multiple function calls.
 
     verbose: int,  default=0
@@ -1014,6 +1010,12 @@ class EnAInem(BaseEstimator):
     dim_order: list, default=None
         The ordering of dimensions to be considered during nndsvd initialization.
 
+    norm_columns: Literal[0, 1, 2], default=0
+        Normalize input tensor over the first dimension (e.g. each column if n_dims==2)
+            =0: Do not normalize
+            =1: Scale each column of the concatenated matrix
+            =2: Substract min and scale each column of the concatenated matrix
+
     ### ISM specifics
     n_embed: int or None, default=None
         Dimension of the embedding space (if None set to the number of components).
@@ -1021,8 +1023,8 @@ class EnAInem(BaseEstimator):
     max_iter_int: int, default=20
         Max number of iterations during the straightening process.
 
-    n_iter_mult: int, default=200
-        Number of iterations of NMF multiplicative updates during the embedding.
+    max_iter_mult: int, default=200
+        Max number of iterations of NMF multiplicative updates during the embedding.
 
     use_fast_mult_rules: boolean, default=True
         Use common matrix estimate in B and H updates.
@@ -1040,16 +1042,16 @@ class EnAInem(BaseEstimator):
     _parameter_constraints: dict = {
         "n_components": [Interval(Integral, 1, None, closed="left")],
         "init": [StrOptions({"random", "nndsvd", "custom"}), None],
-        "use_randomized_svd": ["boolean"],
         "tol": [Interval(Real, 0, None, closed="left")],
         "max_iter": [Interval(Integral, 1, None, closed="left")],
         "random_state": ["random_state"],
         "verbose": ["verbose"],
         "dim_order": [list, None],
+        "norm_columns": [Interval(Integral, 0, 2, closed="both")],
         # ISM specifics
         "n_embed": [Interval(Integral, 0, None, closed="left"), None],
         "max_iter_int": [Interval(Integral, 0, None, closed="left")],
-        "n_iter_mult": [Interval(Integral, 20, None, closed="left")],
+        "max_iter_mult": [Interval(Integral, 20, None, closed="left")],
         "use_fast_mult_rules": ["boolean"],
         "sparsity_coeff": [Interval(Real, 0, None, closed="left")],
         "update_embed": ["boolean"],
@@ -1061,15 +1063,15 @@ class EnAInem(BaseEstimator):
         n_components,
         *,
         init='nndsvd',
-        use_randomized_svd=False,
         tol=1e-4,
         max_iter=200,
         random_state=0,
         verbose=0,
         dim_order=None,
+        norm_columns=0,
         n_embed=None,
         max_iter_int=20,
-        n_iter_mult=200,
+        max_iter_mult=200,
         use_fast_mult_rules=True,
         sparsity_coeff=0.8,
         update_embed=True,
@@ -1077,15 +1079,15 @@ class EnAInem(BaseEstimator):
     ):
         self.n_components = n_components
         self.init = init
-        self.use_randomized_svd = use_randomized_svd
         self.tol = tol
         self.max_iter = max_iter
         self.random_state = random_state
         self.verbose = verbose
         self.dim_order = dim_order
+        self.norm_columns = norm_columns
         self.n_embed = n_embed
         self.max_iter_int = max_iter_int
-        self.n_iter_mult = n_iter_mult
+        self.max_iter_mult = max_iter_mult
         self.use_fast_mult_rules = use_fast_mult_rules
         self.sparsity_coeff = sparsity_coeff
         self.update_embed = update_embed
@@ -1093,26 +1095,16 @@ class EnAInem(BaseEstimator):
 
         self._validate_params()
 
-        if _running_in_notebook() and (self.irc_parallel_fit_1 or self.irc_parallel_fit_2):
-            # Disable parallel operations
-            warnings.warn(
-                "EnAInem called from Jupyter Notebook. Disabling parallel operations.",
-                ResourceWarning
-            )
-            self.irc_parallel_fit_1 = False
-            self.irc_parallel_fit_2 = False
-    
     def get_param(self, name: str):
-        if hasattr(self, name):
-            return getattr(self, name)
-        else:
+        try:
+            return self.dict()[name] 
+        except KeyError:
             raise ValueError(f"Parameter '{name}' does not exist in the model.")
 
     def set_param(self, name: str, value): 
-        if not hasattr(self, name):
+        if name not in self.__fields__: 
             raise ValueError(f"Parameter '{name}' does not exist in the model.") 
         setattr(self, name, value)
-        self._validate_params()
 
     # @_fit_context(prefer_skip_nested_validation=True)
     # (decorator not needed since class parameters already validated in __init__)
@@ -1176,75 +1168,62 @@ class EnAInem(BaseEstimator):
         -------
             NTF dictionary:
                 res["B"]: list[NDArray], NTF components in each dimension.
-
                 res["n_iter"]: int, number of iterations performed.
-
                 res["violation"]: float, violation. (fast hals can be reformulated \
                     as a projected gradient method).
-
                 res["relative_error"]: float, model relative error.
-
             ISM dictionary:
                 res['B']: list[NDArray]
                     B[0] contains ISM metascores.
                     B[1] contains list of view-mapping NDarrays.
-
                 res['HHIi']: Number of non-negligable values in concatenated features by component.
-
                 res['H_embed']: NDArray, NTF loadings in latent space.
-
                 res['Q_embed']: NDArray, NTF view loadings.
-
                 res['X_embed']: NDArray, Embedded views.
-
-                res["relative_error"]: float, model relative error.        """
+                res["relative_error"]: float, model relative error.
+        """
         verbose = self.verbose
 
         if isinstance(X, np.ndarray):
             # Validate X, B and update
             B, update = self._check_params_ntf(X, B, update)
+            if self.norm_columns > 0:
+                # Normalize columns of X if self.norm_columns is True and return a copy
+                X = _norm_columns(X, self.norm_columns, copy=True)
+
             # Fast HALS
-            if not np.isnan(X).any():
-                if verbose >= 1:
-                    print("Applying fast hals...")
-                if B is None:
-                    B = _initialize_ntf(
-                        X,
-                        self.n_components,
-                        self.dim_order,
-                        self.init,
-                        self.use_randomized_svd,
-                        random_state=self.random_state
-                    )
-                l1_reg, l2_reg = self._compute_regularization(X, alpha, l1_ratio)
-                B, n_iter, violation, relative_error = _fit_coordinate_descent(
-                    X, 
-                    B, 
-                    update,
-                    l1_reg, 
-                    l2_reg,
+            if verbose >= 1:
+                print("Applying fast hals...")
+            if B is None:
+                B = _initialize_ntf(
+                    X,
+                    self.n_components,
+                    self.dim_order,
                     self.init,
-                    self.use_randomized_svd,
-                    self.tol,
-                    self.max_iter,
-                    self.random_state,
-                    verbose,
+                    random_state=self.random_state
                 )
-                res = {
-                    "B": B,
-                    "n_iter": n_iter,
-                    "violation": violation,
-                    "relative_error": relative_error
-                }
-                if verbose >= 1:
-                    print("fast-hals applied.")
-                return res
-            else:
-                raise Exception(
-                    (
-                        "Missing data are not accepted in the current version."
-                    )
-                )
+            l1_reg, l2_reg = self._compute_regularization(X, alpha, l1_ratio)
+            B, n_iter, violation, relative_error = _fit_coordinate_descent(
+                X, 
+                B, 
+                update,
+                l1_reg, 
+                l2_reg,
+                verbose,
+                self.n_components,
+                self.tol,
+                self.max_iter,
+                self.random_state,
+            )
+            res = {
+                "B": B,
+                "n_iter": n_iter,
+                "violation": violation,
+                "relative_error": relative_error
+            }
+            if verbose >= 1:
+                print("fast-hals applied.")
+            return res
         elif isinstance(X, list):
             # Validate X, B and update
             B, update = self._check_params_ism(X, B, update, self.H_mask)    
@@ -1271,11 +1250,6 @@ class EnAInem(BaseEstimator):
             if verbose >= 1:
                 print("ism applied.")
             return res
-        else:
-            raise ValueError(
-                "Numpy ndarray or list of ndarrays must be passed to fit_transform. "
-                f"An object of type {type(X)} was passed."
-                )
 
     def _check_params_ntf(
         self,
@@ -1320,8 +1294,6 @@ class EnAInem(BaseEstimator):
                             f" but the tensor has {X.ndim} dimensions."
                         )
                     for dim in range(len(B)):
-                        if B[dim] is None:
-                            B[dim] = np.ones((X.shape[dim], self.n_components))
                         _check_init(B[dim], (X.shape[dim], self.n_components), f"NTF (input B[{dim}])")
                 else:
                     raise ValueError("B must be of type list[NDArrays].")        
@@ -1433,14 +1405,14 @@ class EnAInem(BaseEstimator):
         else:
             l1_reg = np.array(alpha)
             if l1_reg.shape[0] != n_dims:
-                raise ValueError(
+                raise Exception(
                     (
                         f"Regularization array has {l1_reg.shape[0]} elements"
                         f" but the tensor dimension is {n_dims}."
                     )
                 )
             elif ((1 < l1_reg) | (l1_reg < 0)).any():
-                raise ValueError("All regularization terms must be in range 0 to 1.")
+                raise Exception("All regularization terms must be in range 0 to 1.")
 
         assert l1_ratio >= 0, "l1_ratio must be in range 0 to 1."
         assert l1_ratio <= 1, "l1_ratio must be in range 0 to 1."
