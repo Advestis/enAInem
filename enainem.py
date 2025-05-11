@@ -1,6 +1,6 @@
 """
 Created on Fri Jan 17 10:10:00 2025
-Version: 1.2.1
+Version: 1.2.2
 
 @authors: Paul Fogel & George Luta
 @E-mail: paul.fogel@forvismazars.com
@@ -1092,16 +1092,7 @@ class EnAInem(BaseEstimator):
         self.H_mask = H_mask
 
         self._validate_params()
-
-        if _running_in_notebook() and (self.irc_parallel_fit_1 or self.irc_parallel_fit_2):
-            # Disable parallel operations
-            warnings.warn(
-                "EnAInem called from Jupyter Notebook. Disabling parallel operations.",
-                ResourceWarning
-            )
-            self.irc_parallel_fit_1 = False
-            self.irc_parallel_fit_2 = False
-    
+  
     def get_param(self, name: str):
         if hasattr(self, name):
             return getattr(self, name)
