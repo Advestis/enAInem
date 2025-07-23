@@ -1,16 +1,18 @@
 """
 Created on Fri Jan 17 10:10:00 2025
-Version: 1.2.2
+Version: 1.3.0
 
-@authors: Paul Fogel & George Luta
+@authors: Paul Fogel, Christophe Geissler & George Luta
 @E-mail: paul.fogel@forvismazars.com
-@Github: https://github.com/Advestis/enAInem/tree/main
+@Github: https://github.com/Advestis/enAInem_dev/tree/main
 
 The class EnAInem is an extension of the class NMF from scikit-learn:
   - Tensors of any order (Fast HALS)
   - Heterogeneous views (using the Integrated Sources Model)
+  - Random Completions (using the Integrated Sources Model)
+  - Robust approach (using the Target Polish approach)
 Note: The loss criterion is restricted to Frobenius
-Acknowledgment: With Advestis part of Mazars support
+Acknowledgment: With Advestis part of ForvisMazars support
 License: MIT
 
 """
@@ -267,7 +269,7 @@ def _initialize_ntf(
 
     if init == "random":
         rng = check_random_state(random_state)
-        avg = (X.mean() / n_components) ** (1 / X.ndim)
+        avg = (np.nanmean(X) / n_components) ** (1 / X.ndim)
         B = []
         for dim in range(n_dims):
             B.append(
@@ -330,6 +332,26 @@ def _my_update_coordinate_descent(X, W, XHt, HHt, l1_reg, l2_reg, shuffle, rando
     permutation = np.asarray(permutation, dtype=np.intp)
     return _update_cdnmf_fast(W, HHt, XHt, permutation)
 
+def _update_D(X, B, target_polish="CIM"):
+    if target_polish == "CIM":
+        E_square = np.square(X - _generate_tensor(B))
+        twice_sigma_square = np.mean(E_square)
+        return np.exp(- E_square / twice_sigma_square)
+    elif target_polish == "Huber":
+        abs_E = np.abs(X - _generate_tensor(B))
+        abs_E[abs_E < EPSILON] = EPSILON
+        c = np.median(abs_E)
+        return np.where(abs_E < c, 1, c / abs_E)
+    elif target_polish == "L1":
+        # `eps` cannot be a too small value like np.finfo(np.float32).eps
+        eps = X.var() / B[0].shape[1]
+        D = 1 / (np.sqrt(np.square(X - _generate_tensor(B))) + eps ** 2)
+        return D / D.max()
+    elif target_polish == "L21":
+        D = 1 / np.sqrt(np.sum(np.square(X - _generate_tensor(B)), axis=0))
+        D = np.repeat(D[np.newaxis, :], X.shape[0], axis=0)
+        return D / D.max()
+
 def _ensure_minimum(matrix, epsilon):
     matrix[matrix < epsilon] = epsilon
     return matrix
@@ -340,12 +362,13 @@ def _fit_coordinate_descent(
     update: list[bool],
     l1_reg: NDArray,
     l2_reg: NDArray,
-    init: bool,
-    use_randomized_svd: bool,
     tol: float,
     max_iter: int,
     random_state: Union[int, None],
     verbose: int,
+    target_polish: Union[str, None],
+    target_polish_fraction: float, 
+    target_polish_threshold: float,
 ) -> Tuple[list[NDArray], int, float]:
     """Compute Non-negative Matrix Factorization (NMF) with Coordinate Descent.
 
@@ -370,13 +393,7 @@ def _fit_coordinate_descent(
 
     l2_reg : NDArray, default= NDArray of 0's.
         L2 regularization parameters for B.
-
-    init: Literal['random', 'nndsvd', 'custom'], default='nndsvd'
-        The method used for the initialization of the NTF decomposition.
-    
-    use_randomized_svd: bool, default=True
-        use scikit-learn randomized svd. If False, numpy.linalg.svds is used.
-    
+  
     tol: float, default=1.e-4
         Tolerance of the stopping condition.
     
@@ -384,11 +401,14 @@ def _fit_coordinate_descent(
         Maximum number of iterations before timing out.
 
     random_state: , RandomState instance or None, default=0
-        Used when ``init`` ==  'random'. Pass an int 
+        Used when ``init`` ==  'random' and random completions. Pass an int 
         for reproducible results across multiple function calls.
    
     verbose: int,  default=0
         The verbosity level.
+
+    target_polish: Literal['CIM', 'Huber', 'L1', 'L21] | None, default='CIM'
+        If not None: multiplicative coefficient applied to the original target
 
     Returns
     -------
@@ -410,30 +430,27 @@ def _fit_coordinate_descent(
     factorizations" <10.1587/transfun.E92.A.708>`
     Cichocki, Andrzej, and P. H. A. N. Anh-Huy. IEICE transactions on fundamentals
     of electronics, communications and computer sciences 92.3: 708-721, 2009.
+     .. [2] :doi:`"The Target Polish: A New Approach to Outlier-Resistant Non-Negative
+     Matrix and Tensor Factorization" https://arxiv.org/abs/2507.10484`
+     Fogel, Paul, Geissler, Christophe, and Luta, George. arXiv, Computer Science,
+     Machine Learning.
     """
     n_dims = X.ndim
     
     #  so b arrays are in C order in memory
     B = [check_array(b, order="C") for b in B]
     
-    # # Scale components prior to updating loop using max of halfnorm distribution
-    # n_components = B[0].shape[1]
-    # rng = check_random_state(random_state)
-    # avg = (X.mean() / n_components) ** (1 / X.ndim)
-    # for dim in range(n_dims):
-    #     # Generate the same number of values from the standard half normal distribution
-    #     half_normal_values = halfnorm.rvs(size=B[dim].shape[0], random_state=rng)
-    #     # Scale
-    #     B_dim_max = np.max(B[dim], axis=0)
-    #     B[dim] *= (avg * half_normal_values.max() / np.where(B_dim_max==0, 1, B_dim_max))
-
     # Normalize components prior to updating loop
-    for dim in range(n_dims - 1):
-        temp = _ensure_minimum(np.linalg.norm(B[dim], ord=1, axis=0), EPSILON)
-        B[dim] /= temp
-        B[-1] *= temp
-    B[-1] *= np.mean(X) / max(np.mean(_generate_tensor(B)), EPSILON)
+    n_components = B[0].shape[1]
 
+    avg = (np.nanmean(X) / n_components) ** (1 / X.ndim)
+    
+    for dim in range(n_dims-1):
+        temp = _ensure_minimum(np.mean(B[dim], axis=0), EPSILON) / avg
+        B[dim] /= temp    
+        B[-1] *= temp
+    
+    B[-1] *= np.mean(X) / max(np.mean(_generate_tensor(B)), EPSILON)
     # Parameters required by sklearn update_coordinate_descent (but not used for now)
     rng = check_random_state(random_state)
     shuffle = False
@@ -447,11 +464,31 @@ def _fit_coordinate_descent(
         [B[dim].T @ B[dim] for dim in range(n_dims)]
     )
     
-    DX = X
+    if target_polish is not None:
+        avg = np.mean(X)
+        # Calculate the step size to calculate the target change on size/1000 values to save time
+        num_elements = X.size
+        step_size = int(np.ceil((num_elements * target_polish_fraction)**(1/X.ndim)))
+    else:
+        step_size = 1
+
+    slice_obj = tuple(slice(None, None, step_size) for _ in range(X.ndim))
+    
+    DX = X.copy()
+    DX_0_slice = DX[slice_obj].copy()
 
     for n_iter in range(1, max_iter+1):
         violation = 0
-
+        if target_polish is not None:
+            B_slice = list(B[dim][slice_obj[dim]] for dim in range(X.ndim))
+            D_slice = _update_D(X[slice_obj], B_slice, target_polish=target_polish)
+            DX_slice = avg * (1 - D_slice) + D_slice * X[slice_obj]
+            target_change = norm(DX_slice - DX_0_slice) / max(norm(DX_0_slice), EPSILON)
+            if target_change > target_polish_threshold:
+                DX_0_slice = DX_slice.copy()
+                D = _update_D(X, B, target_polish=target_polish)
+                DX = avg * (1 - D) + D * X
+            
         for dim in range(n_dims):
             if update[dim]:
                 if n_dims > 2:
@@ -492,7 +529,7 @@ def _fit_coordinate_descent(
         scaled_violation = violation / violation_init
         if verbose == 2:
             print(f"#{n_iter} violation: {scaled_violation}")
-        if violation / violation_init <= tol:
+        if scaled_violation <= tol:
             if verbose == 2:
                 print(f"Converged at iteration {n_iter + 1}.")
             break
@@ -505,12 +542,270 @@ def _fit_coordinate_descent(
                 ConvergenceWarning,
             )
 
+    if target_polish is not None:
+        # Complete approximation with weighted mult rules to adjust real X
+        # First update the weights obtained at the end of the Target Polish iterations 
+        # and use them fixed in further weighted mult rules.
+        D = _update_D(X, B, target_polish=target_polish)
+        error_slice = [None, None]
+       
+        for n_iter in range(1, max_iter + 1):
+            for dim in range(n_dims):
+                if update[dim]:
+                    if n_dims > 2:
+                        indices = [dim] + [i for i in range(n_dims) if i != dim]
+                        X_moved = np.moveaxis(X, source=indices, destination=list(range(n_dims)))
+                        X_dim = np.reshape(X_moved, (X.shape[dim], -1))
+                        D_moved = np.moveaxis(D, source=indices, destination=list(range(n_dims)))
+                        D_dim = np.reshape(D_moved, (X.shape[dim], -1))
+                        Ht = reduce(
+                            khatri_rao, 
+                            [B[i] for i in indices[1:]]
+                        )
+                    else:
+                        X_dim = X if dim == 0 else X.T
+                        D_dim = D if dim == 0 else D.T
+                        Ht = B[(dim+1)%2]
+                    
+                    H = Ht.T
+                    # update D
+                    denominator= _ensure_minimum((D_dim * (B[dim] @ H)) @ Ht, EPSILON)
+                    B[dim] = B[dim] * ((D_dim * X_dim) @ Ht) / denominator
+
+            # Assess error change on random slices
+            error_slice[-2] = error_slice[-1]
+            B_slice = list(B[dim][slice_obj[dim]] for dim in range(X.ndim))
+            X_hat_slice = _generate_tensor(B_slice)
+            error_slice[-1] = norm(X[slice_obj] - X_hat_slice)
+            if n_iter == 1:
+                relative_error_slice = np.inf
+            else:
+                relative_error_slice = np.abs(error_slice[-1] - error_slice[-2]) / error_slice[-2]
+       
+            if verbose == 2:
+                print(f"#{n_iter} relative error (slices): {relative_error_slice}")
+            if relative_error_slice <= tol:
+                if verbose == 2:
+                    print(f"Converged at iteration {n_iter + 1}.")
+                break
+            elif n_iter == max_iter and tol > 0:
+                warnings.warn(
+                    (
+                        f"Maximum number of iterations {max_iter} reached."
+                        " Increase it to improve convergence."
+                    ),
+                    ConvergenceWarning,
+                )
+
     # Calculate relative norm of residual tensor
     X_hat = _generate_tensor(B)
     E = X - X_hat
     relative_error = norm(E) / max(norm(X), EPSILON)
     return (B, n_iter, scaled_violation, relative_error)
 
+def _ic_complete_with_random_values(X, rng):
+    """Complete missing values with values drawn at random from the array."""
+
+    # Flatten the array
+    flat_X = X.flatten().astype(float)
+    
+    # Identify non-missing (non-NaN) values
+    non_nan_values = flat_X[~np.isnan(flat_X)]
+    
+    # Identify indices of missing (NaN) values
+    nan_indices = np.where(np.isnan(flat_X))[0]
+    
+    # Randomly select non-missing values to replace NaNs
+    replacement_values = rng.choice(non_nan_values, size=nan_indices.size, replace=True)
+    
+    # Replace NaNs with the selected non-missing values
+    flat_X[nan_indices] = replacement_values
+    
+    # Reshape the array back to its original shape
+    X_comp = flat_X.reshape(X.shape)
+    return X_comp
+
+def _ic_parallel_fit(args):
+    """Parallelize multiple fit_transform's from within fit_irc."""
+    cls, completion, X_comp, B_init, update, alpha, l1_ratio = args
+    res = cls.fit_transform(
+        X_comp,
+        B=B_init,
+        update=update,
+        alpha=alpha,
+        l1_ratio=l1_ratio,
+    )
+    B = res['B']
+    relative_error = res["relative_error"]
+    if cls.verbose >= 1:
+        print(f"relative error = {relative_error}")
+    return (completion, B, relative_error)
+
+def _ic_parallel_fit_wrapper(list_args, optimal_workers):
+    with concurrent.futures.ProcessPoolExecutor(max_workers=optimal_workers) as executor:
+        results = list(executor.map(_ic_parallel_fit, list_args))
+
+    return results
+
+def _fit_integrate_completions(
+        cls: object,
+        X: Union[list[NDArray], NDArray],
+        B: Union[list[NDArray], None],
+        update: Union[list[bool], None],
+        alpha: Union[list[float], None],
+        l1_ratio: float = 1.0,
+    ) -> Tuple[list[NDArray], float]:
+    """Integrate Random Completions (IRC) to handle missing values.
+
+    Parameters
+    ----------
+    X : NDArray
+        Constant tensor.
+
+    B : list[NDArray]
+        Initial guess for the solution.
+
+    update : list of booleans, default=True
+        update[dim] set to True  B[dim] be estimated from initial guesses.
+    
+    alpha: float, constant that multiplies the regularization terms in each dimension.
+        Set the nth element to zero to have no regularization
+        on the nth dimension.
+
+    l1_ratio: float, the regularization mixing parameter, with 0 <= l1_ratio <= 1.
+        l1_ratio = 0: the penalty is an element wise L2 penalty (aka Frobenius Norm).
+        l1_ratio = 1: it is an element wise L1 penalty.
+        0 < l1_ratio < 1: the penalty is a combination of L1 and L2.
+    
+    Returns
+    -------
+
+    Approach
+    --------
+        1- Perform random completions
+        2- Apply fast-hals on each completion
+        3- Integrate solutions using ism, ntf or mean
+    """
+    verbose = cls.verbose
+    n_dims = X.ndim
+    num_cores = os.cpu_count()
+    optimal_workers = min(32, num_cores + 0)
+
+    # Loop to factorize completed tensors
+    rng = check_random_state(cls.random_state)
+    X_comp_list = []
+    X_comp_list.extend(_ic_complete_with_random_values(X, rng) for _ in range(cls.n_completions))
+
+    if not cls.irc_parallel_fit_1:
+        B_list = []
+        for completion in range(cls.n_completions):
+            res = cls.fit_transform(
+                X_comp_list[completion],
+                B=B,
+                update=update, 
+                alpha=alpha, 
+                l1_ratio=l1_ratio,
+            )
+            relative_error = res["relative_error"]
+            res_B = res['B']
+            B_list.append(res_B[0])
+            if verbose >= 1:
+                print(f"relative error = {relative_error}")
+    else:
+        warnings.warn("Starting parallel processing (1)...", UserWarning)                                         
+        list_args = [(cls, completion, X_comp_list[completion], B, update, alpha, l1_ratio) 
+                                for completion in range(cls.n_completions)]
+        results = _ic_parallel_fit_wrapper(list_args, optimal_workers)
+        B_list = [None] * cls.n_completions
+        for completion, res_B, relative_error in results:
+            # B_list[completion] = normalize(res_B[0], axis=0, copy=False)
+            B_list[completion] = res_B[0]
+            
+    # Integration
+    # Inhibate verbose, dim_order and target_polish during integration
+    original_verbose = cls.verbose
+    cls.verbose = 0
+    original_order_dim = cls.dim_order
+    cls.dim_order = None
+    original_dynamic_target = cls.target_polish
+    cls.target_polish = None
+    if cls.integrator == "ism":
+        # Run ISM on B_list
+        if verbose >= 1:
+            print("Applying ism...")
+        res = cls.fit_transform(B_list)
+        W = res['B'][0]
+        relative_error = res["relative_error"]
+    elif cls.integrator == "nmf":
+        # Alternatively run NMF on concatenated B_list
+        W_concat = np.concatenate(B_list, axis=1)
+        res = cls.fit_transform(W_concat)
+        W = res['B'][0]
+        relative_error = res["relative_error"]
+    elif cls.integrator == "mean":
+        W = sum(B_list[completion] for completion in range(cls.n_completions)) / cls.n_completions
+
+    # Restore original class parameters
+    cls.verbose = original_verbose
+    cls.dim_order = original_order_dim
+    cls.target_polish = original_dynamic_target
+    if cls.verbose >= 1 and cls.integrator != "mean":
+        print(f"relative error = {relative_error}")
+        print(f"{cls.integrator} applied.")
+
+    # Loop this time using fixed ISM W
+    original_init_mode = cls.init
+    cls.init = "custom"
+    B = [np.zeros_like(res_B[dim]) for dim in range(n_dims)]
+    avg = (np.nanmean(X) / (W.mean() * cls.n_components))**(1 / (n_dims-1))
+    # avg = 1
+    B_init = [avg * np.ones_like(res_B[dim]) for dim in range(n_dims)]
+    B_init[0] = W
+    # Send a copy of B_init to fit_transform to preserve B_init 
+    B_init_copy = copy.deepcopy(B_init)
+    update_2 = [False] + [update[dim] for dim in range(1, n_dims)]
+
+    if not cls.irc_parallel_fit_2:
+        for completion in range(cls.n_completions):
+            # Send a copy of B_init to preserve argument to fit_transform
+            res = cls.fit_transform(
+                X_comp_list[completion], 
+                B = B_init_copy,
+                update=update_2,
+                alpha=alpha,
+                l1_ratio=l1_ratio,
+            )
+            for dim in range(n_dims):
+                B[dim] += res['B'][dim]
+            relative_error = res["relative_error"]
+            if verbose >= 1:
+                print(f"completion = {completion}; relative error = {relative_error}")
+    else:
+        warnings.warn("Starting parallel processing (2)...", UserWarning) 
+        # Send a copy of B_init to preserve argument to fit_transform
+        list_args = [
+            (cls, completion, X_comp_list[completion], B_init_copy, update_2, alpha, l1_ratio) 
+            for completion in range(cls.n_completions)
+        ]
+        results = _ic_parallel_fit_wrapper(list_args, optimal_workers)
+        if verbose >= 1:
+            print("Finished parallel processing (2).")
+        for completion, res_B, relative_error in results:
+            for dim in range(n_dims):
+                B[dim] += res_B[dim]
+            if verbose >= 1:
+                print(f"completion = {completion}; relative error = {relative_error}")
+
+    for dim in range(n_dims):
+        B[dim] /= cls.n_completions
+
+    cls.init = original_init_mode
+
+    # Calculate relative error (wrt last random completion only)
+    X_hat = _generate_tensor(B)
+    E = X - X_hat
+    relative_error = norm(np.nan_to_num(E)) / norm(np.nan_to_num(X))
+    return (B, relative_error)
 
 def _is_integrate_views(
     cls,
@@ -606,6 +901,8 @@ def _is_integrate_views(
 
         # Normalize B_view by max column and update H_view
         temp = _ensure_minimum(np.linalg.norm(B, ord=1, axis=0), EPSILON)
+        # temp = _ensure_minimum(np.max(B, axis=0), EPSILON)
+        # temp = 1
         B_view /= temp
         H_view *= temp
 
@@ -865,13 +1162,18 @@ def _fit_integrate_sources(
         # -------------------------------------------------
 
         original_n_components = cls.n_components
+        original_dynamic_target = cls.target_polish
+        cls.target_polish = None
         cls.n_components = n_embed
         res = cls.fit_transform(concat.X)
         B = res["B"][0]
         cls.n_components = original_n_components
+        cls.target_polish = original_dynamic_target
         concat.H = res["B"][1]
         # temp = 1
         temp = _ensure_minimum(np.linalg.norm(B, ord=1, axis=0), EPSILON)
+        # temp = _ensure_minimum(np.max(B, axis=0), EPSILON)
+        # temp = _ensure_minimum(np.percentile(B, 95, axis=0), EPSILON)
         B /= temp
         concat.H *= temp
         if np.isclose(temp, EPSILON).any():
@@ -1005,7 +1307,7 @@ class EnAInem(BaseEstimator):
         Maximum number of iterations before timing out.
 
     random_state: , RandomState instance or None, default=0
-        Used when ``init`` ==  'random'. Pass an int 
+        Used when ``init`` ==  'random' and random completions. Pass an int 
         for reproducible results across multiple function calls.
 
     verbose: int,  default=0
@@ -1013,6 +1315,35 @@ class EnAInem(BaseEstimator):
 
     dim_order: list, default=None
         The ordering of dimensions to be considered during nndsvd initialization.
+
+    target_polish: Literal['CIM', 'Huber', 'L1', 'L21] | None, default='CIM'
+        If not None: multiplicative coefficient applied to the original target
+
+    target_polish_fraction, float, default=1.e-3
+        The fraction of the polished target used to assess whether the target
+        should be updated.
+
+    target_polish_threshold, float, default=0.05
+        Update the target if the relative difference between the current target
+        and the new target is greater than the threshold.
+
+    ### Random completions specifics (experimental for NTF)
+    force_all_finite: boolean, default=True
+        Don't allow missing data and don't apply random completions
+
+    n_completions: int, default=5
+        Number of random completions performed by the IRC algorithm.
+
+    integrator: str, default='ism'
+        Valid options: 'mean', 'nmf' or 'ism' integrate random completions.
+
+    irc_parallel_fit_1: boolean, default=True
+        Parallelize fit_transform prior to ism in random completions
+        (inactivated if launched from a workbook).
+
+    irc_parallel_fit_2: boolean, default=False
+        Parallelize fit_transform after ism in random completions.
+        (inactivated if launched from a workbook).
 
     ### ISM specifics
     n_embed: int or None, default=None
@@ -1046,6 +1377,15 @@ class EnAInem(BaseEstimator):
         "random_state": ["random_state"],
         "verbose": ["verbose"],
         "dim_order": [list, None],
+        "target_polish": [StrOptions({"CIM", "Huber", "L1", "L21"}), None],
+        "target_polish_fraction": [Interval(Real, 0, None, closed="left")],
+        "target_polish_threshold": [Interval(Real, 0, None, closed="left")],
+        # Random completions specifics
+        "force_all_finite": ["boolean"],
+        "n_completions": [Interval(Integral, 2, None, closed="left")],
+        "integrator": [StrOptions({"mean", "nmf", "ism"})],
+        "irc_parallel_fit_1": ["boolean"],
+        "irc_parallel_fit_2": ["boolean"],
         # ISM specifics
         "n_embed": [Interval(Integral, 0, None, closed="left"), None],
         "max_iter_int": [Interval(Integral, 0, None, closed="left")],
@@ -1067,6 +1407,14 @@ class EnAInem(BaseEstimator):
         random_state=0,
         verbose=0,
         dim_order=None,
+        target_polish=None,
+        target_polish_fraction=0.001,
+        target_polish_threshold=0.05,
+        force_all_finite=True,
+        n_completions=5,
+        integrator="ism",
+        irc_parallel_fit_1=True,
+        irc_parallel_fit_2=False,
         n_embed=None,
         max_iter_int=20,
         n_iter_mult=200,
@@ -1083,6 +1431,14 @@ class EnAInem(BaseEstimator):
         self.random_state = random_state
         self.verbose = verbose
         self.dim_order = dim_order
+        self.target_polish = target_polish
+        self.target_polish_fraction = target_polish_fraction
+        self.target_polish_threshold = target_polish_threshold
+        self.force_all_finite = force_all_finite
+        self.n_completions = n_completions
+        self.integrator = integrator
+        self.irc_parallel_fit_1 = irc_parallel_fit_1
+        self.irc_parallel_fit_2 = irc_parallel_fit_2
         self.n_embed = n_embed
         self.max_iter_int = max_iter_int
         self.n_iter_mult = n_iter_mult
@@ -1092,7 +1448,16 @@ class EnAInem(BaseEstimator):
         self.H_mask = H_mask
 
         self._validate_params()
-  
+
+        if _running_in_notebook() and (self.irc_parallel_fit_1 or self.irc_parallel_fit_2):
+            # Disable parallel operations
+            warnings.warn(
+                "EnAInem called from Jupyter Notebook. Disabling parallel operations.",
+                ResourceWarning
+            )
+            self.irc_parallel_fit_1 = False
+            self.irc_parallel_fit_2 = False
+    
     def get_param(self, name: str):
         if hasattr(self, name):
             return getattr(self, name)
@@ -1209,17 +1574,18 @@ class EnAInem(BaseEstimator):
                     )
                 l1_reg, l2_reg = self._compute_regularization(X, alpha, l1_ratio)
                 B, n_iter, violation, relative_error = _fit_coordinate_descent(
-                    X, 
+                    X,
                     B, 
                     update,
                     l1_reg, 
                     l2_reg,
-                    self.init,
-                    self.use_randomized_svd,
                     self.tol,
                     self.max_iter,
                     self.random_state,
                     verbose,
+                    self.target_polish,
+                    self.target_polish_fraction,
+                    self.target_polish_threshold,
                 )
                 res = {
                     "B": B,
@@ -1231,11 +1597,26 @@ class EnAInem(BaseEstimator):
                     print("fast-hals applied.")
                 return res
             else:
-                raise Exception(
-                    (
-                        "Missing data are not accepted in the current version."
-                    )
+                warnings.warn('Applying random completions due to missing values in X.', UserWarning)
+                if verbose >= 1:
+                    print("Applying random completions with fast-hals...")
+                B, relative_error = _fit_integrate_completions(
+                    self,
+                    X, 
+                    B, 
+                    update, 
+                    alpha, 
+                    l1_ratio,
                 )
+                res = {
+                    "B": B,
+                    "n_iter": np.nan,
+                    "violation": np.nan,
+                    "relative_error": relative_error
+                }
+                if verbose >= 1:
+                    print(f"fast-hals applied with {self.n_completions} random completions.")
+                return res            
         elif isinstance(X, list):
             # Validate X, B and update
             B, update = self._check_params_ism(X, B, update, self.H_mask)    
@@ -1267,7 +1648,7 @@ class EnAInem(BaseEstimator):
                 "Numpy ndarray or list of ndarrays must be passed to fit_transform. "
                 f"An object of type {type(X)} was passed."
                 )
-
+        
     def _check_params_ntf(
         self,
         X: NDArray,
@@ -1279,17 +1660,17 @@ class EnAInem(BaseEstimator):
         try:
             X = check_array(
                 X, 
-                accept_sparse=False, 
+                accept_sparse=("csr"), 
                 dtype=[np.float64, np.float32],
-                ensure_all_finite=True,
+                ensure_all_finite=self.force_all_finite,
                 allow_nd=True,
             )
         except:
             X = check_array(
                 X, 
-                accept_sparse=False, 
+                accept_sparse=("csr"), 
                 dtype=[np.float64, np.float32],
-                force_all_finite=True,
+                force_all_finite=self.force_all_finite,
                 allow_nd=True,
             )
         check_non_negative(np.nan_to_num(X, nan=0.0), "X")
@@ -1310,9 +1691,10 @@ class EnAInem(BaseEstimator):
                             f"Initialialization list has length {len(B)}"
                             f" but the tensor has {X.ndim} dimensions."
                         )
+                    avg = (np.nanmean(X) / self.n_components) ** (1 / X.ndim)
                     for dim in range(len(B)):
                         if B[dim] is None:
-                            B[dim] = np.ones((X.shape[dim], self.n_components))
+                            B[dim] = avg * np.ones((X.shape[dim], self.n_components))
                         _check_init(B[dim], (X.shape[dim], self.n_components), f"NTF (input B[{dim}])")
                 else:
                     raise ValueError("B must be of type list[NDArrays].")        
@@ -1339,13 +1721,12 @@ class EnAInem(BaseEstimator):
     ) -> NDArray:
         
         for view in range(len(X)):
-            # TODO Accept sparse formatted views in future version
             try:
                 X[view] = check_array(
                     X[view], 
                     accept_sparse=False,
                     dtype=[np.float64, np.float32],
-                    ensure_all_finite=True,
+                    ensure_all_finite=False,
                     allow_nd=False,
                 )
             except:
@@ -1353,7 +1734,7 @@ class EnAInem(BaseEstimator):
                     X[view], 
                     accept_sparse=False,
                     dtype=[np.float64, np.float32],
-                    force_all_finite=True,
+                    force_all_finite=False,
                     allow_nd=False,
                 )                
             # check all views share same dimension 0

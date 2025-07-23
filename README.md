@@ -1,6 +1,6 @@
 # EnAInem
 **EnAInem** (pronounced /ɪˈneɪnəm/), is a Python class that implements state-of-the-art algorithms 
-for decomposing nonnegative multiway array and multi-view data into rank-1 nonnegative tensors.
+for decomposing Non-Negative multiway array and multi-view data into rank-1 nonnegative tensors.
   
 # Motivation
 In machine learning, multi-view data refers to datasets comprising multiple distinct attribute sets 
@@ -9,6 +9,11 @@ in different contexts, the data can be represented as a tensor. **EnAInem** enab
 using Non-Negative Tensor Factorization (NTF) and allows the integration of heterogeneous 
 multi-view data into a shared latent space through the *Integrated Sources Model* (ISM).
 
+# Applications
+**EnAInem** is mentioned in two recently published works:
+- **Cox NTF** (ADD LINK HERE), is a breakthrough methodology that leverages Non-Negative Tensor Factorization to extract actionable latent factors directly linked to survival outcomes. This approach not only matches the predictive power of established Coxnet models using original covariates, but also offers data-driven teams a transparent, structured framework for clustering and segmentation — making complex survival data more accessible and interpretable. The approach is described in details in the tutorial **survival_ntf_tutorial**, which can be found in the root directory.
+- **Target Polish** (ADD LINK HERE), is a robust and computationally efficient framework for Non-Negative Matrix and Tensor Factorization. It provides outlier resistance while maintaining the high performance of the fast-HALS algorithm used by enAInem. The Target Polish approach matches or exceeds the accuracy of state-of-the-art robust NTF methods while reducing computational time by an order of magnitude.
+ 
 # Installation
 **EnAInem** is distributed as a standalone Python file, which can be downloaded and installed at your convenience.
 
@@ -76,6 +81,7 @@ This project is licensed under the MIT License.
 
 # Authors
 - **Paul Fogel** (paul.fogel@forvismazars.com)
+- **Christophe Geissler**
 - **George Luta**
 
 # Acknowledgements
