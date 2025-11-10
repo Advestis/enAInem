@@ -5,7 +5,7 @@ import pandas as pd
 from scipy.optimize import linear_sum_assignment
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
-from enainem import EnAInem, _generate_tensor
+from enainem import EnAInem
 
 # Install required packB_genes
 # subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'])
@@ -64,7 +64,7 @@ def simple_ntf(
     # enainem._validate_params()
     n_dims = len(n_rows)
     B_gen = [np.random.rand(n_rows[dim]*n_components).reshape(n_rows[dim], n_components) for dim in range(n_dims)]
-    X_gen = _generate_tensor(B_gen)
+    X_gen = enainem.generate_tensor(B_gen)
     # Scaling to range [0, 1]
     X_gen = (X_gen - X_gen.min()) / (X_gen.max() - X_gen.min())
     X_gen += noise_coef*np.random.rand(np.prod(n_rows)).reshape(n_rows)

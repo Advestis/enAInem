@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
-from enainem import EnAInem, _generate_tensor
+from enainem import EnAInem
 
 # Install required packB_genes
 # subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'])
