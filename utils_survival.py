@@ -42,7 +42,7 @@ from sksurv.nonparametric import kaplan_meier_estimator
 from sksurv.preprocessing import OneHotEncoder, encode_categorical
 from sksurv.util import Surv
 
-from enainem import EnAInem, _generate_tensor
+from enainem import EnAInem
 
 set_config(display="text")  # displays text representation of estimators
 plt.rcParams["figure.figsize"] = [7.2, 4.8]
