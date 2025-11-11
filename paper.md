@@ -62,6 +62,16 @@ EnAInem provides a suite of tools for scalable and interpretable decomposition o
 
 - **Scikit-learn compatible API**: EnAInem follows the estimator design pattern used in scikit-learn, exposing methods like `fit_transform`, `get_param`, and `set_param`. It inherits from scikit-learn’s NMF base classes, ensuring consistent parameter validation, input checking, and seamless integration into ML pipelines.
 
+# EnAInem Workflow
+
+The following diagram illustrates the core components of EnAInem and how they interact to process multiway and multi-view data:
+
+<p align="center">
+  <img src="figs/enainem_workflow.png" alt="EnAInem Workflow" width="500"/>
+</p>
+
+Inputs include multiway tensors and multi-view matrices. These are processed through Fast HALS, ISM integration, Target Polish, and optional Random Completions. The outputs include factor matrices, latent representations, and relative error metrics.
+
 ## Installation
 
 To install EnAInem from source, follow these steps:
