@@ -59,7 +59,7 @@ def simple_ntf(
         max_iter=200,
         tol=1e-6,
         verbose=0,
-        random_state=0,
+        random_state=0
     )
     # enainem._validate_params()
     n_dims = len(n_rows)

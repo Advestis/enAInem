@@ -495,30 +495,34 @@ def _fit_coordinate_descent(
                     indices = [dim] + [i for i in range(n_dims) if i != dim]
                     X_moved = np.moveaxis(DX, source=indices, destination=list(range(n_dims)))
                     X_dim = np.reshape(X_moved, (X.shape[dim], -1))
+                    indices = [i for i in range(n_dims) if i != dim]
+                    XHt = safe_sparse_dot(X_dim, reduce(khatri_rao, [B[i] for i in indices]))
                 else:
-                    X_dim = DX if dim == 0 else DX.T
-                indices = [i for i in range(n_dims) if i != dim]
-                XHt = safe_sparse_dot(
-                    X_dim,
-                    reduce(khatri_rao, [B[i] for i in indices])
-                )
+                    if dim==0:
+                        X_dim = DX
+                        XHt = safe_sparse_dot(X_dim, B[1])
+                    else:
+                        X_dim = DX.T
+                        XHt = safe_sparse_dot(X_dim, B[0])
+
                 HHt = HHt_buffer / _ensure_minimum(B[dim].T @ B[dim], EPSILON)
-                # HHt is copied since it may be modified by __update_coordinate_descent
+
+                # HHt is copied if l2_reg[dim] != 0.0 since it may be modified by __update_coordinate_descent
                 HHt_copy = HHt.copy() if l2_reg[dim] != 0.0 else HHt
                 violation += _my_update_coordinate_descent(
                     X_dim, B[dim], XHt, HHt_copy, l1_reg[dim], l2_reg[dim], shuffle, rng
                 )
                 np.copyto(HHt_buffer, HHt * _ensure_minimum(B[dim].T @ B[dim], EPSILON))
 
-                # Alternative update using unmodified sklearn update is sub-optimal
-                #     indices = [i for i in range(n_dims) if i != dim]
-                #     Ht = reduce(
-                #         khatri_rao, 
-                #         [B[i] for i in indices]
-                #     )
-                #     violation += _update_coordinate_descent(
-                #         X_dim, B[dim], Ht, l1_reg[dim], l2_reg[dim], shuffle, rng
-                #     )
+                # Alternative update using unmodified sklearn update is possible but sub-optimal
+                # indices = [i for i in range(n_dims) if i != dim]
+                # Ht = reduce(
+                #     khatri_rao, 
+                #     [B[i] for i in indices]
+                # )
+                # violation += _update_coordinate_descent(
+                #     X_dim, B[dim], Ht, l1_reg[dim], l2_reg[dim], shuffle, rng
+                # )
 
         if n_iter == 1:
             violation_init = violation
@@ -1316,7 +1320,7 @@ class EnAInem(BaseEstimator):
     dim_order: list, default=None
         The ordering of dimensions to be considered during nndsvd initialization.
 
-    target_polish: Literal['CIM', 'Huber', 'L1', 'L21] | None, default='CIM'
+    target_polish: Literal['CIM', 'Huber', 'L1', 'L21] | None, default=None
         If not None: multiplicative coefficient applied to the original target
 
     target_polish_fraction, float, default=1.e-3

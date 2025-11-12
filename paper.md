@@ -31,6 +31,8 @@ doi: 10.21105/joss.XXXXXXX
 
 EnAInem is a Python package for decomposing non-negative multiway arrays and heterogeneous multi-view datasets into rank-1 nonnegative tensors. It extends scikit-learn’s NMF framework to support tensor factorization (NTF), robust modeling via Target Polish, and integration of incomplete or noisy views using the Integrated Sources Model (ISM). EnAInem is designed for scalable, interpretable machine learning in domains like survival analysis, clustering, and visualization.
 
+> EnAInem internally calls scikit-learn’s `_update_cdnmf_fast` C function, which performs coordinate descent updates for NMF. This ensures EnAInem inherits the same computational efficiency as its ancestor.
+
 > EnAInem is released under the MIT License.
 
 # Statement of Need
@@ -54,6 +56,34 @@ EnAInem provides a suite of tools for scalable and interpretable decomposition o
 
 - **Fast HALS for tensors of any order** [@cichocki2009fast]: Implements Hierarchical Alternating Least Squares (HALS) for efficient non-negative tensor factorization. This method generalizes NMF to higher-order tensors and is known for its fast convergence under non-negativity constraints.
 
+- **Tensor-aware NNDSVD Initialization**
+
+  To support robust initialization for higher-order tensors, EnAInem extends the classical NNDSVD method using a structured two-step approach:
+
+  - **Step 1: Matrix-based initialization**  
+    The input tensor is unfolded along the axis with the largest dimension, producing a matrix view. NNDSVD is then applied to this matrix to initialize the factor matrix corresponding to that axis via standard NMF.
+
+  - **Step 2: Sequential SVD unraveling**  
+    For the remaining dimensions, and for each component, EnAInem performs rank-1 SVDs across the tensor’s modes in descending order of their dimensionality. This sequential process “unravels” the structure of the tensor, yielding coherent initializations for all factor matrices.
+
+  This strategy preserves the interpretability and sparsity benefits of NNDSVD while generalizing it to higher-order data structures, making it suitable for tensor decomposition tasks, as illustrated in the following diagram:
+
+<p align="center">
+  <img src="figs/nndsvd.png" alt="Tensor-aware NNDSVD Initialization" width="250"/>
+</p>
+
+Inputs include multiway tensors and multi-view matrices. These are processed through Fast HALS, ISM integration, Target Polish, and optional Random Completions. The outputs include factor matrices, latent representations, and relative error metrics.
+
+- **C-level performance via scikit-learn’s optimized gradient descent**: EnAInem leverages scikit-learn’s `_update_cdnmf_fast` C function, which implements coordinate descent updates for NMF. This allows EnAInem to match the speed and scalability of scikit-learn’s native routines.  
+  A benchmark comparing both implementations on a synthetic matrix (`10000 × 1000`, `n_components=10`) yielded:  
+  ```
+  === Performance Comparison ===
+  scikit-learn NMF:   5.691 sec | Rel. Error: 0.5979
+  EnAInem (NMF mode): 5.753 sec | Rel. Error: 0.5979
+  ```
+  This confirms that EnAInem achieves identical reconstruction quality while maintaining competitive performance.  
+  For full reproducibility, see the `compare_performances` notebook included in the package, which details the benchmarking setup and results.
+
 - **ISM integration for multi-view learning** [@fogel2024ism]: The Integrated Sources Model (ISM) enables joint factorization of multiple heterogeneous views by learning a shared latent representation. It is particularly effective when views are noisy, incomplete, or measured on different scales.
 
 - **Target Polish for robust factorization** [@fogel2025targetpolish]: Offers resilience to outliers and corrupted data through robust loss functions including CIM, Huber, L1, and L21 norms. These options allow users to tailor the decomposition to the noise characteristics of their data.
@@ -67,7 +97,7 @@ EnAInem provides a suite of tools for scalable and interpretable decomposition o
 The following diagram illustrates the core components of EnAInem and how they interact to process multiway and multi-view data:
 
 <p align="center">
-  <img src="figs/enainem_workflow.png" alt="EnAInem Workflow" width="500"/>
+  <img src="figs/enainem_workflow.png" alt="EnAInem Workflow" width="250"/>
 </p>
 
 Inputs include multiway tensors and multi-view matrices. These are processed through Fast HALS, ISM integration, Target Polish, and optional Random Completions. The outputs include factor matrices, latent representations, and relative error metrics.
