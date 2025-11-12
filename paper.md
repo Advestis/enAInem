@@ -69,7 +69,7 @@ EnAInem provides a suite of tools for scalable and interpretable decomposition o
   This strategy preserves the interpretability and sparsity benefits of NNDSVD while generalizing it to higher-order data structures, making it suitable for tensor decomposition tasks, as illustrated in the following diagram:
 
 <p align="center">
-  <img src="figs/nndsvd.png" alt="Tensor-aware NNDSVD Initialization" width="250"/>
+  <img src="figs/nndsvd.png" alt="Tensor-aware NNDSVD Initialization" width="500"/>
 </p>
 
 Inputs include multiway tensors and multi-view matrices. These are processed through Fast HALS, ISM integration, Target Polish, and optional Random Completions. The outputs include factor matrices, latent representations, and relative error metrics.
@@ -97,7 +97,7 @@ Inputs include multiway tensors and multi-view matrices. These are processed thr
 The following diagram illustrates the core components of EnAInem and how they interact to process multiway and multi-view data:
 
 <p align="center">
-  <img src="figs/enainem_workflow.png" alt="EnAInem Workflow" width="250"/>
+  <img src="figs/enainem_workflow.png" alt="EnAInem Workflow" width="500"/>
 </p>
 
 Inputs include multiway tensors and multi-view matrices. These are processed through Fast HALS, ISM integration, Target Polish, and optional Random Completions. The outputs include factor matrices, latent representations, and relative error metrics.
