@@ -8,11 +8,12 @@ tags:
   - scikit-learn
 authors:
   - name: Paul Fogel
-    orcid: 0000-0002-XXXX-XXXX
+    orcid: 0000-0002-5398-6622
     affiliation: 1
   - name: Christophe Geissler
     affiliation: 2
   - name: George Luta
+    orcid: 0000-0002-4035-7632
     affiliation: 3
 affiliations:
   - name: Advestis, ForvisMazars R&D
@@ -44,7 +45,7 @@ Modern datasets often contain multiple views or modalities, each offering distin
 - Robustness to outliers via Target Polish [@fogel2025targetpolish]
 - Random completions for missing data (experimental)
 
-These capabilities are critical for applications in health analytics, bioinformatics, and social sciences, where interpretability and resilience are paramount.
+These capabilities are critical for applications in health analytics, bioinformatics, and social sciences, where interpretability and robustness are paramount.
 
 EnAInem has been successfully applied to survival analysis in the CoxNTF framework [@fogel2025coxntf], demonstrating its utility for joint clustering and prediction. This application highlights EnAInem’s ability to extract interpretable latent structures from multiway clinical data, supporting both visualization and outcome modeling.
 
@@ -52,7 +53,7 @@ EnAInem has been successfully applied to survival analysis in the CoxNTF framewo
 
 # Functionality
 
-EnAInem provides a suite of tools for scalable and interpretable decomposition of multiway and multi-view data:
+EnAInem provides a suite of tools for scalable and interpretable decompositions of multiway and multi-view data:
 
 - **Fast HALS for tensors of any order** [@cichocki2009fast]: Implements Hierarchical Alternating Least Squares (HALS) for efficient non-negative tensor factorization. This method generalizes NMF to higher-order tensors and is known for its fast convergence under non-negativity constraints.
 
@@ -75,7 +76,7 @@ EnAInem provides a suite of tools for scalable and interpretable decomposition o
 Inputs include multiway tensors and multi-view matrices. These are processed through Fast HALS, ISM integration, Target Polish, and optional Random Completions. The outputs include factor matrices, latent representations, and relative error metrics.
 
 - **C-level performance via scikit-learn’s optimized gradient descent**: EnAInem leverages scikit-learn’s `_update_cdnmf_fast` C function, which implements coordinate descent updates for NMF. This allows EnAInem to match the speed and scalability of scikit-learn’s native routines.  
-  A benchmark comparing both implementations on a synthetic matrix (`10000 × 1000`, `n_components=10`) yielded:  
+  A small benchmarking experiment comparing both implementations on a synthetic matrix (`10000 × 1000`, `n_components=10`) yielded:  
   ```
   === Performance Comparison ===
   scikit-learn NMF:   5.691 sec | Rel. Error: 0.5979
@@ -86,11 +87,11 @@ Inputs include multiway tensors and multi-view matrices. These are processed thr
 
 - **ISM integration for multi-view learning** [@fogel2024ism]: The Integrated Sources Model (ISM) enables joint factorization of multiple heterogeneous views by learning a shared latent representation. It is particularly effective when views are noisy, incomplete, or measured on different scales.
 
-- **Target Polish for robust factorization** [@fogel2025targetpolish]: Offers resilience to outliers and corrupted data through robust loss functions including CIM, Huber, L1, and L21 norms. These options allow users to tailor the decomposition to the noise characteristics of their data.
+- **Target Polish for robust factorization** [@fogel2025targetpolish]: Offers resistance to outliers and corrupted data through robust loss functions including CIM, Huber, L1, and L21 norms. These options allow users to tailor the decomposition to the noise characteristics of their data.
 
 - **Random Completions for missing data**: An experimental feature that performs multiple random imputations followed by ensemble decomposition using ISM, NMF, or averaging. This approach is useful for exploratory analysis of datasets with missing values, though it is disabled by default.
 
-- **Scikit-learn compatible API**: EnAInem follows the estimator design pattern used in scikit-learn, exposing methods like `fit_transform`, `get_param`, and `set_param`. It inherits from scikit-learn’s NMF base classes, ensuring consistent parameter validation, input checking, and seamless integration into ML pipelines.
+- **Scikit-learn compatible API**: EnAInem follows the estimator design pattern used in scikit-learn, exposing methods like `fit_transform`, `get_param`, and `set_param`. It inherits scikit-learn’s NMF base classes, ensuring consistent parameter validation, input checking, and seamless integration into ML pipelines.
 
 # EnAInem Workflow
 
@@ -106,18 +107,25 @@ Inputs include multiway tensors and multi-view matrices. These are processed thr
 
 To install EnAInem from source, follow these steps:
 
-1. **Clone the GitHub repository**:
+1. **Clone the GitHub repository into a new directory**:
+  To clone the repository into a local directory of your choice, run the following commands in your terminal:
 
     ```bash
+    mkdir <clone_directory>
+    cd <clone_directory>
     git clone https://github.com/Advestis/enAInem.git
     cd enAInem
     ```
+  
+  Replace <clone_directory> with the path or name of the directory where you want to clone the repository. 
+
 
 2. **Install the package**:
 
     ```bash
     pip install .
     ```
+
 
 3. **(Optional) Install development dependencies**:
 
@@ -126,6 +134,18 @@ To install EnAInem from source, follow these steps:
     ```bash
     pip install .[dev]
     ```
+
+4. **Using enAInem within a project with a virtual environment**
+
+    If you plan to use `enAInem` within a project that has its own virtual environment, activate the environment and install the package from the local clone:
+
+
+    ```bash
+    pip install /absolute/path/to/enAInem
+    ```
+
+    Replace `/absolute/path/to/enAInem` with the actual path to the cloned repository.
+
 
 > **Note**: EnAInem requires **Python ≥ 3.11**. Ensure your environment meets this requirement before installation.
 
