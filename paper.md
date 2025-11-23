@@ -24,8 +24,8 @@ affiliations:
     index: 3
 date: 2025-11-10
 repository: https://github.com/Advestis/enAInem
-archive: https://zenodo.org/record/XXXXXXX
-doi: 10.21105/joss.XXXXXXX
+archive: https://doi.org/10.5281/zenodo.17688606
+doi: 10.5281/zenodo.17688606
 ---
 
 # Summary
