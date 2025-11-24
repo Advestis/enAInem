@@ -148,7 +148,7 @@ To install EnAInem from source, follow these steps:
     Replace `/absolute/path/to/enAInem` with the actual path to the cloned repository.
 
 
-> **Note**: EnAInem requires **Python ≥ 3.11**. Ensure your environment meets this requirement before installation.
+> **Note**: EnAInem requires **Python 3.11** or higher. Ensure your environment meets this requirement before installation.
 
 # Usage
 
@@ -201,7 +201,7 @@ When enabled, EnAInem performs multiple random imputations and integrates the re
 
 # Dependencies
 
-- Python ≥ 3.11  
+- Python 3.11 or higher 
 - NumPy, SciPy, pandas, scikit-learn, Dask  
 - Optional: Matplotlib, IPython, pytest
 
