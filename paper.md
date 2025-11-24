@@ -26,6 +26,7 @@ date: 2025-11-10
 repository: https://github.com/Advestis/enAInem
 archive: https://doi.org/10.5281/zenodo.17688923
 doi: 10.5281/zenodo.17688923
+bibliography: paper.bib
 ---
 
 # Summary
