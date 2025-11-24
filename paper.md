@@ -11,17 +11,15 @@ authors:
     orcid: 0000-0002-5398-6622
     affiliation: 1
   - name: Christophe Geissler
-    affiliation: 2
+    affiliation: 1
   - name: George Luta
     orcid: 0000-0002-4035-7632
-    affiliation: 3
+    affiliation: 2
 affiliations:
   - name: Advestis, ForvisMazars R&D
     index: 1
-  - name: Independent Researcher
-    index: 2
   - name: Georgetown University
-    index: 3
+    index: 2
 date: 2025-11-10
 repository: https://github.com/Advestis/enAInem
 archive: https://doi.org/10.5281/zenodo.17688923
