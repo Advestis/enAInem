@@ -213,11 +213,3 @@ EnAInem builds on scikit-learn’s NMF infrastructure and is supported by Advest
 - Target Polish for robust factorization [@fogel2025targetpolish]
 
 # References
-
-[@cichocki2009fast]: Cichocki, A., & Phan, A. (2009). Fast Local Algorithms for Large Scale Nonnegative Matrix and Tensor Factorizations. *IEICE Trans. Fundam. Electron. Commun. Comput. Sci.*, 92-A, 708–721. https://doi.org/10.1587/transfun.E92.A.708
-
-[@fogel2024ism]: Fogel, P., Geissler, C., Augé, F., Boldina, G., & Luta, G. (2024). Integrated sources model: A new space-learning model for heterogeneous multi-view data reduction, visualization, and clustering. *Artificial Intelligence in Health*. https://doi.org/10.36922/aih.3427
-
-[@fogel2025targetpolish]: Fogel, P., Geissler, C., & Luta, G. (2025). The Target Polish: A New Approach to Outlier-Resistant Non-Negative Matrix and Tensor Factorization. arXiv:2507.10484
-
-[@fogel2025coxntf]: Fogel, P., Geissler, C., & Luta, G. (2025). *CoxNTF: A New Approach for Joint Clustering and Prediction in Survival Analysis*. arXiv:2506.06411. https://arxiv.org/abs/2506.06411
