@@ -1,6 +1,6 @@
 """
 Created on Fri Jan 17 10:10:00 2025
-Version: 1.3.2
+Version: 1.3.3
 
 @authors: Paul Fogel, Christophe Geissler & George Luta
 @E-mail: paul.fogel@forvismazars.com
