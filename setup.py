@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='enainem',
-    version='1.3.4',
+    version='1.3.5',
     description='Robust Non-Negative Tensor Factorization with Integrated Sources and Random Completions',
     author='Paul Fogel, Christophe Geissler, George Luta',
     author_email='paul.fogel@forvismazars.com',
