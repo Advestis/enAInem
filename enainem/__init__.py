@@ -1,4 +1,4 @@
-from .enainem import (
+from .core import (
     EnAInem,
     generate_tensor,
     get_param,
